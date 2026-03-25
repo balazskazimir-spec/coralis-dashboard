@@ -1,4 +1,16 @@
-import Sidebar from '../components/Sidebar'
+import './globals.css'
+import Sidebar from '@/components/Sidebar'
+import { Inter } from 'next/font/google'
+
+const inter = Inter({
+  subsets: ['latin'],
+  variable: '--font-inter',
+})
+
+export const metadata = {
+  title: 'Coralis Dashboard',
+  description: 'Luxury Villa Dashboard',
+}
 
 export default function RootLayout({
   children,
@@ -6,29 +18,13 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
-      <body style={styles.page}>
-        <Sidebar />
-
-        <div style={styles.main}>
-          {children}
+    <html lang="en" className={inter.variable}>
+      <body style={{ margin: 0, fontFamily: 'var(--font-inter)' }}>
+        <div style={{ display: 'flex' }}>
+          <Sidebar />
+          <div style={{ flex: 1 }}>{children}</div>
         </div>
       </body>
     </html>
   )
-}
-
-const styles = {
-  page: {
-    display: 'flex',
-    minHeight: '100vh',
-    background: '#020617',
-    color: 'white',
-    fontFamily: 'sans-serif',
-  },
-
-  main: {
-    flex: 1,
-    padding: 30,
-  },
 }
