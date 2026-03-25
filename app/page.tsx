@@ -24,15 +24,23 @@ export default function Home() {
   const [bookings, setBookings] = useState<Booking[]>([])
   const [loading, setLoading] = useState(true)
 
-  const [investment] = useState(200000)
+  const investment = 200000
 
   useEffect(() => {
     fetchBookings()
   }, [])
 
   async function fetchBookings() {
-    const { data } = await supabase.from('bookings').select('*')
-    setBookings((data as any) || [])
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('*')
+      .order('check_in', { ascending: true })
+
+    if (error) {
+      console.error(error)
+    }
+
+    setBookings((data as Booking[]) || [])
     setLoading(false)
   }
 
@@ -55,12 +63,11 @@ export default function Home() {
     totalNights > 0 ? totalRevenue / totalNights : 0
 
   const monthlyRevenue = useMemo(() => {
-    const map: any = {}
+    const map: Record<string, number> = {}
 
     bookings.forEach((b) => {
       const month = b.check_in.slice(0, 7)
       const rev = nights(b) * (b.price_per_night || 0)
-
       map[month] = (map[month] || 0) + rev
     })
 
@@ -82,10 +89,10 @@ export default function Home() {
       <div style={styles.sidebar}>
         <h2 style={{ marginBottom: 30 }}>Coralis</h2>
 
-        <div style={styles.nav}>Dashboard</div>
-        <div style={styles.nav}>Bookings</div>
-        <div style={styles.nav}>Villas</div>
-        <div style={styles.nav}>Analytics</div>
+        <Nav label="Dashboard" active />
+        <Nav label="Bookings" />
+        <Nav label="Villas" />
+        <Nav label="Analytics" />
       </div>
 
       {/* MAIN */}
@@ -102,17 +109,26 @@ export default function Home() {
 
         {/* CHART */}
         <div style={styles.chart}>
-          <ResponsiveContainer width="100%" height={250}>
+          <ResponsiveContainer width="100%" height={260}>
             <LineChart data={monthlyRevenue}>
+              <defs>
+                <linearGradient id="color" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.8} />
+                  <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+
               <CartesianGrid stroke="#222" />
               <XAxis dataKey="month" stroke="#888" />
               <YAxis stroke="#888" />
               <Tooltip />
+
               <Line
                 type="monotone"
                 dataKey="revenue"
                 stroke="#8b5cf6"
-                strokeWidth={2}
+                strokeWidth={3}
+                dot={false}
               />
             </LineChart>
           </ResponsiveContainer>
@@ -120,25 +136,26 @@ export default function Home() {
 
         {/* FORECAST */}
         <div style={styles.forecast}>
-          <div>Monthly: ${Math.round(forecastMonthly)}</div>
-          <div>Yearly: ${Math.round(forecastYearly)}</div>
-          <div>ROI: {roi.toFixed(1)}%</div>
+          <Forecast label="Monthly" value={forecastMonthly} />
+          <Forecast label="Yearly" value={forecastYearly} />
+          <Forecast label="ROI" value={roi} isPercent />
         </div>
 
         {/* BOOKINGS */}
         <div style={styles.table}>
-          <h3>Bookings</h3>
+          <h3 style={{ marginBottom: 20 }}>Bookings</h3>
 
           {bookings.map((b) => (
             <div key={b.id} style={styles.row}>
               <div>
-                <b>{b.guest_name}</b>
-                <div style={{ opacity: 0.6 }}>
+                <div style={{ fontWeight: 600 }}>{b.guest_name}</div>
+
+                <div style={styles.sub}>
                   {b.check_in} → {b.check_out}
                 </div>
               </div>
 
-              <div>
+              <div style={styles.price}>
                 $
                 {Math.round(
                   nights(b) * (b.price_per_night || 0)
@@ -152,37 +169,68 @@ export default function Home() {
   )
 }
 
+/* ---------- COMPONENTS ---------- */
+
+function Nav({ label, active }: any) {
+  return (
+    <div
+      style={{
+        marginBottom: 12,
+        padding: '10px 14px',
+        borderRadius: 10,
+        background: active ? 'rgba(139,92,246,0.2)' : 'transparent',
+        cursor: 'pointer',
+        opacity: active ? 1 : 0.7,
+      }}
+    >
+      {label}
+    </div>
+  )
+}
+
 function Card({ title, value }: any) {
   return (
     <div style={styles.card}>
-      <div style={{ opacity: 0.6 }}>{title}</div>
+      <div style={styles.label}>{title}</div>
       <div style={styles.value}>{value}</div>
     </div>
   )
 }
 
+function Forecast({ label, value, isPercent }: any) {
+  return (
+    <div style={styles.forecastBox}>
+      <div style={styles.label}>{label}</div>
+      <div style={styles.value}>
+        {isPercent
+          ? `${value.toFixed(1)}%`
+          : `$${Math.round(value)}`}
+      </div>
+    </div>
+  )
+}
+
+/* ---------- STYLES ---------- */
+
 const styles = {
   page: {
     display: 'flex',
     minHeight: '100vh',
-    background:
-      'radial-gradient(circle at top left, #7c3aed, #020617)',
+    background: `
+      radial-gradient(circle at 20% 20%, #8b5cf6 0%, transparent 40%),
+      radial-gradient(circle at 80% 0%, #6366f1 0%, transparent 40%),
+      #020617
+    `,
     color: 'white',
     fontFamily: 'sans-serif',
   },
 
   sidebar: {
     width: 240,
-    background: 'rgba(17,24,39,0.7)',
-    backdropFilter: 'blur(10px)',
     padding: 20,
-    borderRight: '1px solid rgba(255,255,255,0.1)',
-  },
-
-  nav: {
-    marginBottom: 15,
-    opacity: 0.7,
-    cursor: 'pointer',
+    background: 'rgba(17,24,39,0.7)',
+    backdropFilter: 'blur(12px)',
+    borderRight: '1px solid rgba(255,255,255,0.05)',
   },
 
   main: {
@@ -198,25 +246,19 @@ const styles = {
   },
 
   card: {
-    background: 'rgba(17,24,39,0.8)',
     padding: 20,
-    borderRadius: 16,
-    border: '1px solid rgba(255,255,255,0.1)',
-    backdropFilter: 'blur(10px)',
-  },
-
-  value: {
-    fontSize: 24,
-    marginTop: 10,
+    borderRadius: 18,
+    background:
+      'linear-gradient(145deg, rgba(30,41,59,0.9), rgba(15,23,42,0.9))',
+    border: '1px solid rgba(255,255,255,0.08)',
+    boxShadow: '0 10px 30px rgba(0,0,0,0.4)',
   },
 
   chart: {
-    height: 280,
     background: 'rgba(17,24,39,0.8)',
-    borderRadius: 16,
+    borderRadius: 20,
     padding: 20,
     marginBottom: 30,
-    border: '1px solid rgba(255,255,255,0.1)',
   },
 
   forecast: {
@@ -225,17 +267,42 @@ const styles = {
     marginBottom: 30,
   },
 
+  forecastBox: {
+    padding: 16,
+    borderRadius: 14,
+    background: 'rgba(255,255,255,0.03)',
+  },
+
   table: {
-    background: 'rgba(17,24,39,0.8)',
-    borderRadius: 16,
     padding: 20,
-    border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 20,
+    background: 'rgba(17,24,39,0.8)',
   },
 
   row: {
     display: 'flex',
     justifyContent: 'space-between',
-    padding: 15,
+    padding: 16,
     borderBottom: '1px solid rgba(255,255,255,0.05)',
+  },
+
+  label: {
+    opacity: 0.6,
+    fontSize: 13,
+  },
+
+  value: {
+    fontSize: 24,
+    fontWeight: 600,
+  },
+
+  sub: {
+    opacity: 0.6,
+    fontSize: 13,
+  },
+
+  price: {
+    fontWeight: 600,
+    color: '#8b5cf6',
   },
 }
