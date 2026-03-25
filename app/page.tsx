@@ -81,11 +81,11 @@ export default function Home() {
   const occupancy = Math.round((totalNights / 30) * 100)
 
   return (
-    <div style={{ padding: 30, fontFamily: 'Arial' }}>
+    <div style={container}>
       <h1 style={{ marginBottom: 20 }}>Coralis Dashboard</h1>
 
-      {/* 📊 KPI CARDS */}
-      <div style={{ display: 'flex', gap: 20, marginBottom: 30 }}>
+      {/* KPI */}
+      <div style={kpiContainer}>
         <div style={card}>
           <p>Revenue</p>
           <h2>${totalRevenue}</h2>
@@ -107,36 +107,41 @@ export default function Home() {
         </div>
       </div>
 
-      {/* ➕ ADD BOOKING */}
+      {/* ADD */}
       <div style={section}>
         <h3>Add Booking</h3>
 
         <input
+          style={input}
           placeholder="Guest name"
           value={guestName}
           onChange={(e) => setGuestName(e.target.value)}
         />
 
         <input
+          style={input}
           type="date"
           value={checkIn}
           onChange={(e) => setCheckIn(e.target.value)}
         />
 
         <input
+          style={input}
           type="date"
           value={checkOut}
           onChange={(e) => setCheckOut(e.target.value)}
         />
 
         <input
+          style={input}
           type="number"
-          placeholder="Price"
+          placeholder="Price per night"
           value={price}
           onChange={(e) => setPrice(e.target.value)}
         />
 
         <select
+          style={input}
           value={villaId}
           onChange={(e) => setVillaId(e.target.value)}
         >
@@ -148,10 +153,12 @@ export default function Home() {
           ))}
         </select>
 
-        <button onClick={addBooking}>Add</button>
+        <button style={button} onClick={addBooking}>
+          Add Booking
+        </button>
       </div>
 
-      {/* 📋 BOOKINGS */}
+      {/* LIST */}
       <div style={section}>
         <h3>Bookings</h3>
 
@@ -171,12 +178,19 @@ export default function Home() {
                 <p>
                   {b.check_in} → {b.check_out}
                 </p>
-                <p>{villa?.name}</p>
+                <p style={{ opacity: 0.6 }}>
+                  {villa?.name || 'No villa'}
+                </p>
               </div>
 
-              <div>
+              <div style={{ textAlign: 'right' }}>
                 <p>${total}</p>
-                <button onClick={() => deleteBooking(b.id)}>❌</button>
+                <button
+                  style={deleteBtn}
+                  onClick={() => deleteBooking(b.id)}
+                >
+                  ❌
+                </button>
               </div>
             </div>
           )
@@ -188,16 +202,29 @@ export default function Home() {
 
 // 🎨 STYLES
 
+const container = {
+  padding: 30,
+  fontFamily: 'Arial',
+  background: '#000',
+  minHeight: '100vh',
+  color: 'white',
+}
+
+const kpiContainer = {
+  display: 'flex',
+  gap: 20,
+  marginBottom: 30,
+}
+
 const card = {
   background: '#111',
-  color: 'white',
   padding: 20,
   borderRadius: 10,
   flex: 1,
 }
 
 const section = {
-  background: '#f5f5f5',
+  background: '#111',
   padding: 20,
   borderRadius: 10,
   marginBottom: 20,
@@ -206,11 +233,34 @@ const section = {
   gap: 10,
 }
 
+const input = {
+  padding: 10,
+  borderRadius: 6,
+  border: '1px solid #333',
+  background: '#1a1a1a',
+  color: 'white',
+}
+
+const button = {
+  padding: 12,
+  borderRadius: 8,
+  background: '#4f46e5',
+  color: 'white',
+  border: 'none',
+  cursor: 'pointer',
+}
+
 const bookingRow = {
   display: 'flex',
   justifyContent: 'space-between',
-  background: 'white',
+  background: '#1a1a1a',
   padding: 15,
   borderRadius: 8,
-  marginBottom: 10,
+}
+
+const deleteBtn = {
+  background: 'transparent',
+  border: 'none',
+  color: 'red',
+  cursor: 'pointer',
 }
