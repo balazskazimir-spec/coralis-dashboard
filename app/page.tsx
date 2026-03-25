@@ -9,6 +9,7 @@ export default function Home() {
   const [guestName, setGuestName] = useState('')
   const [checkIn, setCheckIn] = useState('')
   const [checkOut, setCheckOut] = useState('')
+  const [price, setPrice] = useState('')
 
   useEffect(() => {
     fetchBookings()
@@ -28,7 +29,7 @@ export default function Home() {
   }
 
   async function addBooking() {
-    if (!guestName || !checkIn || !checkOut) {
+    if (!guestName || !checkIn || !checkOut || !price) {
       alert('Fill all fields')
       return
     }
@@ -38,6 +39,7 @@ export default function Home() {
         guest_name: guestName,
         check_in: checkIn,
         check_out: checkOut,
+        price_per_night: Number(price),
       },
     ])
 
@@ -48,6 +50,7 @@ export default function Home() {
       setGuestName('')
       setCheckIn('')
       setCheckOut('')
+      setPrice('')
       fetchBookings()
     }
   }
@@ -70,10 +73,22 @@ export default function Home() {
   const totalNights = bookings.reduce((sum, b) => {
     const start = new Date(b.check_in)
     const end = new Date(b.check_out)
-    const diff =
+    const nights =
       (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
-    return sum + diff
+    return sum + nights
   }, 0)
+
+  const totalRevenue = bookings.reduce((sum, b) => {
+    const start = new Date(b.check_in)
+    const end = new Date(b.check_out)
+    const nights =
+      (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
+
+    return sum + nights * (b.price_per_night || 0)
+  }, 0)
+
+  const totalDays = 30
+  const occupancy = Math.round((totalNights / totalDays) * 100)
 
   return (
     <div style={{ padding: 20 }}>
@@ -82,6 +97,8 @@ export default function Home() {
       <h2>Stats</h2>
       <p>Total bookings: {totalBookings}</p>
       <p>Total nights: {totalNights}</p>
+      <p>Total revenue: ${totalRevenue}</p>
+      <p>Occupancy: {occupancy}%</p>
 
       <hr />
 
@@ -111,6 +128,15 @@ export default function Home() {
 
       <br /><br />
 
+      <input
+        type="number"
+        placeholder="Price per night"
+        value={price}
+        onChange={(e) => setPrice(e.target.value)}
+      />
+
+      <br /><br />
+
       <button onClick={addBooking}>
         Add
       </button>
@@ -123,7 +149,7 @@ export default function Home() {
 
       {bookings.map((b) => (
         <div key={b.id} style={{ marginBottom: 10 }}>
-          {b.guest_name} | {b.check_in} → {b.check_out}
+          {b.guest_name} | {b.check_in} → {b.check_out} | 💰 ${b.price_per_night}
 
           <button
             onClick={() => deleteBooking(b.id)}
