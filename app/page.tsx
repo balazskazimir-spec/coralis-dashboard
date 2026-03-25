@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
+export const dynamic = 'force-dynamic'
+
 export default function Home() {
   const [bookings, setBookings] = useState<any[]>([])
 
@@ -10,90 +12,85 @@ export default function Home() {
   const [checkIn, setCheckIn] = useState('')
   const [checkOut, setCheckOut] = useState('')
   const [price, setPrice] = useState('')
+  const [villaId, setVillaId] = useState('')
+
+  const [villas, setVillas] = useState<any[]>([])
 
   useEffect(() => {
     fetchBookings()
+    fetchVillas()
   }, [])
 
   async function fetchBookings() {
     const { data, error } = await supabase
       .from('bookings')
       .select('*')
-      .order('check_in', { ascending: true })
+      .order('created_at', { ascending: false })
 
-    if (error) {
-      console.error(error)
-    } else {
-      setBookings(data || [])
-    }
+    if (!error) setBookings(data || [])
+  }
+
+  async function fetchVillas() {
+    const { data, error } = await supabase
+      .from('villas')
+      .select('*')
+
+    if (!error) setVillas(data || [])
   }
 
   async function addBooking() {
-    if (!guestName || !checkIn || !checkOut || !price) {
-      alert('Fill all fields')
-      return
-    }
+    if (!guestName || !checkIn || !checkOut || !price || !villaId) return
 
-    const { error } = await supabase.from('bookings').insert([
+    await supabase.from('bookings').insert([
       {
         guest_name: guestName,
         check_in: checkIn,
         check_out: checkOut,
         price_per_night: Number(price),
+        villa_id: villaId,
       },
     ])
 
-    if (error) {
-      console.error(error)
-      alert('Error adding booking')
-    } else {
-      setGuestName('')
-      setCheckIn('')
-      setCheckOut('')
-      setPrice('')
-      fetchBookings()
-    }
+    setGuestName('')
+    setCheckIn('')
+    setCheckOut('')
+    setPrice('')
+
+    fetchBookings()
   }
 
   async function deleteBooking(id: string) {
-    const { error } = await supabase
-      .from('bookings')
-      .delete()
-      .eq('id', id)
-
-    if (error) {
-      console.error(error)
-    } else {
-      fetchBookings()
-    }
+    await supabase.from('bookings').delete().eq('id', id)
+    fetchBookings()
   }
 
+  // 📊 STATS
   const totalBookings = bookings.length
 
-  const totalNights = bookings.reduce((sum, b) => {
-    const start = new Date(b.check_in)
-    const end = new Date(b.check_out)
+  const totalNights = bookings.reduce((acc, b) => {
     const nights =
-      (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
-    return sum + nights
+      (new Date(b.check_out).getTime() -
+        new Date(b.check_in).getTime()) /
+      (1000 * 60 * 60 * 24)
+    return acc + nights
   }, 0)
 
-  const totalRevenue = bookings.reduce((sum, b) => {
-    const start = new Date(b.check_in)
-    const end = new Date(b.check_out)
+  const totalRevenue = bookings.reduce((acc, b) => {
     const nights =
-      (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
+      (new Date(b.check_out).getTime() -
+        new Date(b.check_in).getTime()) /
+      (1000 * 60 * 60 * 24)
 
-    return sum + nights * (b.price_per_night || 0)
+    return acc + nights * (b.price_per_night || 0)
   }, 0)
 
-  const totalDays = 30
-  const occupancy = Math.round((totalNights / totalDays) * 100)
+  const occupancy = Math.round((totalNights / 30) * 100)
 
   return (
     <div style={{ padding: 20 }}>
       <h1>Coralis Dashboard</h1>
 
+      {/* 📊 STATS */}
       <h2>Stats</h2>
       <p>Total bookings: {totalBookings}</p>
       <p>Total nights: {totalNights}</p>
@@ -102,6 +99,7 @@ export default function Home() {
 
       <hr />
 
+      {/* ➕ ADD BOOKING */}
       <h2>Add Booking</h2>
 
       <input
@@ -109,7 +107,6 @@ export default function Home() {
         value={guestName}
         onChange={(e) => setGuestName(e.target.value)}
       />
-
       <br /><br />
 
       <input
@@ -117,7 +114,6 @@ export default function Home() {
         value={checkIn}
         onChange={(e) => setCheckIn(e.target.value)}
       />
-
       <br /><br />
 
       <input
@@ -125,7 +121,6 @@ export default function Home() {
         value={checkOut}
         onChange={(e) => setCheckOut(e.target.value)}
       />
-
       <br /><br />
 
       <input
@@ -134,31 +129,47 @@ export default function Home() {
         value={price}
         onChange={(e) => setPrice(e.target.value)}
       />
+      <br /><br />
+
+      <select
+        value={villaId}
+        onChange={(e) => setVillaId(e.target.value)}
+      >
+        <option value="">Select villa</option>
+        {villas.map((v) => (
+          <option key={v.id} value={v.id}>
+            {v.name}
+          </option>
+        ))}
+      </select>
 
       <br /><br />
 
-      <button onClick={addBooking}>
-        Add
-      </button>
+      <button onClick={addBooking}>Add</button>
 
       <hr />
 
+      {/* 📋 BOOKINGS */}
       <h2>Bookings</h2>
 
-      {bookings.length === 0 && <p>No bookings yet</p>}
+      {bookings.map((b) => {
+        const nights =
+          (new Date(b.check_out).getTime() -
+            new Date(b.check_in).getTime()) /
+          (1000 * 60 * 60 * 24)
 
-      {bookings.map((b) => (
-        <div key={b.id} style={{ marginBottom: 10 }}>
-          {b.guest_name} | {b.check_in} → {b.check_out} | 💰 ${b.price_per_night}
+        const total = nights * (b.price_per_night || 0)
 
-          <button
-            onClick={() => deleteBooking(b.id)}
-            style={{ marginLeft: 10 }}
-          >
-            ❌
-          </button>
-        </div>
-      ))}
+        const villa = villas.find((v) => v.id === b.villa_id)
+
+        return (
+          <div key={b.id}>
+            {b.guest_name} | {b.check_in} → {b.check_out} | 🏠{' '}
+            {villa?.name || '—'} | 💰 ${total}
+            <button onClick={() => deleteBooking(b.id)}>❌</button>
+          </div>
+        )
+      })}
     </div>
   )
 }
