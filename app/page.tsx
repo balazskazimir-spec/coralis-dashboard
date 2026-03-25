@@ -2,63 +2,50 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-} from 'recharts'
+
+export const dynamic = 'force-dynamic'
 
 export default function Home() {
   const [bookings, setBookings] = useState<any[]>([])
-  const [villas, setVillas] = useState<any[]>([])
-
   const [guestName, setGuestName] = useState('')
   const [checkIn, setCheckIn] = useState('')
   const [checkOut, setCheckOut] = useState('')
   const [price, setPrice] = useState('')
-  const [villaId, setVillaId] = useState('')
 
   useEffect(() => {
     fetchBookings()
-    fetchVillas()
   }, [])
 
   async function fetchBookings() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('bookings')
       .select('*')
-      .order('created_at', { ascending: false })
+      .order('check_in', { ascending: true })
 
-    setBookings(data || [])
-  }
-
-  async function fetchVillas() {
-    const { data } = await supabase.from('villas').select('*')
-    setVillas(data || [])
+    if (error) console.error(error)
+    else setBookings(data || [])
   }
 
   async function addBooking() {
-    if (!guestName || !checkIn || !checkOut || !price || !villaId) return
+    if (!guestName || !checkIn || !checkOut) return
 
-    await supabase.from('bookings').insert([
+    const { error } = await supabase.from('bookings').insert([
       {
         guest_name: guestName,
         check_in: checkIn,
         check_out: checkOut,
-        price_per_night: Number(price),
-        villa_id: villaId,
+        price_per_night: price ? Number(price) : null,
       },
     ])
 
-    setGuestName('')
-    setCheckIn('')
-    setCheckOut('')
-    setPrice('')
-
-    fetchBookings()
+    if (error) console.error(error)
+    else {
+      setGuestName('')
+      setCheckIn('')
+      setCheckOut('')
+      setPrice('')
+      fetchBookings()
+    }
   }
 
   async function deleteBooking(id: string) {
@@ -66,213 +53,130 @@ export default function Home() {
     fetchBookings()
   }
 
-  // 📊 STATS
+  // ===== STATS =====
+
   const totalBookings = bookings.length
 
   const totalNights = bookings.reduce((acc, b) => {
     const nights =
-      (new Date(b.check_out) as any - new Date(b.check_in) as any) /
+      (new Date(b.check_out || '').getTime() -
+        new Date(b.check_in || '').getTime()) /
       (1000 * 60 * 60 * 24)
-    return acc + nights
+
+    return acc + (nights || 0)
   }, 0)
 
   const totalRevenue = bookings.reduce((acc, b) => {
     const nights =
-      (new Date(b.check_out) as any - new Date(b.check_in) as any) /
+      (new Date(b.check_out || '').getTime() -
+        new Date(b.check_in || '').getTime()) /
       (1000 * 60 * 60 * 24)
 
-    return acc + nights * (b.price_per_night || 0)
+    return acc + (nights || 0) * (b.price_per_night || 0)
   }, 0)
 
   const occupancy = Math.round((totalNights / 30) * 100)
 
-  // 📈 CHART DATA (monthly revenue)
-  const revenueByDate: Record<string, number> = {}
-
-  bookings.forEach((b) => {
-    const date = b.check_in
-    const nights =
-      (new Date(b.check_out) as any - new Date(b.check_in) as any) /
-      (1000 * 60 * 60 * 24)
-
-    const total = nights * (b.price_per_night || 0)
-
-    if (!revenueByDate[date]) revenueByDate[date] = 0
-    revenueByDate[date] += total
-  })
-
-  const chartData = Object.entries(revenueByDate).map(([date, revenue]) => ({
-    date,
-    revenue,
-  }))
-
   return (
-    <div style={container}>
+    <div style={{ padding: 20, color: 'white', background: '#000', minHeight: '100vh' }}>
       <h1>Coralis Dashboard</h1>
 
-      {/* KPI */}
-      <div style={kpiContainer}>
-        <div style={card}>
-          <p>Revenue</p>
-          <h2>${totalRevenue}</h2>
-        </div>
-
-        <div style={card}>
-          <p>Occupancy</p>
-          <h2>{occupancy}%</h2>
-        </div>
-
-        <div style={card}>
-          <p>Bookings</p>
-          <h2>{totalBookings}</h2>
-        </div>
-
-        <div style={card}>
-          <p>Nights</p>
-          <h2>{totalNights}</h2>
-        </div>
+      {/* ===== STATS ===== */}
+      <div style={{ display: 'flex', gap: 20, marginBottom: 30 }}>
+        <div style={card}>Revenue ${totalRevenue}</div>
+        <div style={card}>Occupancy {occupancy}%</div>
+        <div style={card}>Bookings {totalBookings}</div>
+        <div style={card}>Nights {totalNights}</div>
       </div>
 
-      {/* 📈 CHART */}
-      <div style={section}>
-        <h3>Revenue Over Time</h3>
+      {/* ===== ADD FORM ===== */}
+      <h2>Add Booking</h2>
 
-        <div style={{ width: '100%', height: 300 }}>
-          <ResponsiveContainer>
-            <LineChart data={chartData}>
-              <XAxis dataKey="date" />
-              <YAxis />
-              <Tooltip />
-              <Line type="monotone" dataKey="revenue" stroke="#4f46e5" />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
+      <input
+        placeholder="Guest name"
+        value={guestName}
+        onChange={(e) => setGuestName(e.target.value)}
+        style={input}
+      />
 
-      {/* ADD */}
-      <div style={section}>
-        <h3>Add Booking</h3>
+      <input type="date" value={checkIn} onChange={(e) => setCheckIn(e.target.value)} style={input} />
 
-        <input style={input} placeholder="Guest name"
-          value={guestName}
-          onChange={(e) => setGuestName(e.target.value)} />
+      <input type="date" value={checkOut} onChange={(e) => setCheckOut(e.target.value)} style={input} />
 
-        <input style={input} type="date"
-          value={checkIn}
-          onChange={(e) => setCheckIn(e.target.value)} />
+      <input
+        type="number"
+        placeholder="Price per night"
+        value={price}
+        onChange={(e) => setPrice(e.target.value)}
+        style={input}
+      />
 
-        <input style={input} type="date"
-          value={checkOut}
-          onChange={(e) => setCheckOut(e.target.value)} />
+      <button onClick={addBooking} style={button}>
+        Add
+      </button>
 
-        <input style={input} type="number"
-          placeholder="Price"
-          value={price}
-          onChange={(e) => setPrice(e.target.value)} />
+      <hr style={{ margin: '30px 0' }} />
 
-        <select style={input}
-          value={villaId}
-          onChange={(e) => setVillaId(e.target.value)}>
-          <option value="">Select villa</option>
-          {villas.map((v) => (
-            <option key={v.id} value={v.id}>{v.name}</option>
-          ))}
-        </select>
+      {/* ===== LIST ===== */}
+      <h2>Bookings</h2>
 
-        <button style={button} onClick={addBooking}>
-          Add Booking
-        </button>
-      </div>
+      {bookings.map((b) => {
+        const nights =
+          (new Date(b.check_out || '').getTime() -
+            new Date(b.check_in || '').getTime()) /
+          (1000 * 60 * 60 * 24)
 
-      {/* LIST */}
-      <div style={section}>
-        <h3>Bookings</h3>
+        const total = (nights || 0) * (b.price_per_night || 0)
 
-        {bookings.map((b) => {
-          const nights =
-            (new Date(b.check_out) as any - new Date(b.check_in) as any) /
-            (1000 * 60 * 60 * 24)
-
-          const total = nights * (b.price_per_night || 0)
-          const villa = villas.find((v) => v.id === b.villa_id)
-
-          return (
-            <div key={b.id} style={bookingRow}>
+        return (
+          <div key={b.id} style={row}>
+            <div>
+              <strong>{b.guest_name}</strong>
               <div>
-                <b>{b.guest_name}</b>
-                <p>{b.check_in} → {b.check_out}</p>
-                <p style={{ opacity: 0.6 }}>{villa?.name}</p>
-              </div>
-
-              <div style={{ textAlign: 'right' }}>
-                <p>${total}</p>
-                <button style={deleteBtn}
-                  onClick={() => deleteBooking(b.id)}>
-                  ❌
-                </button>
+                {b.check_in} → {b.check_out}
               </div>
             </div>
-          )
-        })}
-      </div>
+
+            <div>
+              ${total}
+              <button onClick={() => deleteBooking(b.id)} style={deleteBtn}>
+                ❌
+              </button>
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
 
-// 🎨 styles
-
-const container = {
-  padding: 30,
-  background: '#000',
-  minHeight: '100vh',
-  color: 'white',
-}
-
-const kpiContainer = {
-  display: 'flex',
-  gap: 20,
-  marginBottom: 30,
-}
+// ===== STYLES =====
 
 const card = {
   background: '#111',
   padding: 20,
   borderRadius: 10,
-  flex: 1,
-}
-
-const section = {
-  background: '#111',
-  padding: 20,
-  borderRadius: 10,
-  marginBottom: 20,
-  display: 'flex',
-  flexDirection: 'column' as const,
-  gap: 10,
+  minWidth: 150,
 }
 
 const input = {
+  display: 'block',
+  marginBottom: 10,
   padding: 10,
-  borderRadius: 6,
-  border: '1px solid #333',
-  background: '#1a1a1a',
-  color: 'white',
+  width: 250,
 }
 
 const button = {
-  padding: 12,
-  borderRadius: 8,
-  background: '#4f46e5',
-  color: 'white',
-  border: 'none',
+  padding: 10,
   cursor: 'pointer',
 }
 
-const bookingRow = {
+const row = {
   display: 'flex',
   justifyContent: 'space-between',
-  background: '#1a1a1a',
-  padding: 15,
+  marginBottom: 10,
+  padding: 10,
+  background: '#111',
   borderRadius: 8,
 }
 
@@ -280,5 +184,6 @@ const deleteBtn = {
   background: 'transparent',
   border: 'none',
   color: 'red',
+  marginLeft: 10,
   cursor: 'pointer',
 }
