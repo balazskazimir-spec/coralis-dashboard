@@ -2,6 +2,14 @@
 
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+} from 'recharts'
 
 export default function Home() {
   const [bookings, setBookings] = useState<any[]>([])
@@ -63,16 +71,14 @@ export default function Home() {
 
   const totalNights = bookings.reduce((acc, b) => {
     const nights =
-      (new Date(b.check_out).getTime() -
-        new Date(b.check_in).getTime()) /
+      (new Date(b.check_out) as any - new Date(b.check_in) as any) /
       (1000 * 60 * 60 * 24)
     return acc + nights
   }, 0)
 
   const totalRevenue = bookings.reduce((acc, b) => {
     const nights =
-      (new Date(b.check_out).getTime() -
-        new Date(b.check_in).getTime()) /
+      (new Date(b.check_out) as any - new Date(b.check_in) as any) /
       (1000 * 60 * 60 * 24)
 
     return acc + nights * (b.price_per_night || 0)
@@ -80,9 +86,29 @@ export default function Home() {
 
   const occupancy = Math.round((totalNights / 30) * 100)
 
+  // 📈 CHART DATA (monthly revenue)
+  const revenueByDate: Record<string, number> = {}
+
+  bookings.forEach((b) => {
+    const date = b.check_in
+    const nights =
+      (new Date(b.check_out) as any - new Date(b.check_in) as any) /
+      (1000 * 60 * 60 * 24)
+
+    const total = nights * (b.price_per_night || 0)
+
+    if (!revenueByDate[date]) revenueByDate[date] = 0
+    revenueByDate[date] += total
+  })
+
+  const chartData = Object.entries(revenueByDate).map(([date, revenue]) => ({
+    date,
+    revenue,
+  }))
+
   return (
     <div style={container}>
-      <h1 style={{ marginBottom: 20 }}>Coralis Dashboard</h1>
+      <h1>Coralis Dashboard</h1>
 
       {/* KPI */}
       <div style={kpiContainer}>
@@ -107,49 +133,49 @@ export default function Home() {
         </div>
       </div>
 
+      {/* 📈 CHART */}
+      <div style={section}>
+        <h3>Revenue Over Time</h3>
+
+        <div style={{ width: '100%', height: 300 }}>
+          <ResponsiveContainer>
+            <LineChart data={chartData}>
+              <XAxis dataKey="date" />
+              <YAxis />
+              <Tooltip />
+              <Line type="monotone" dataKey="revenue" stroke="#4f46e5" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
       {/* ADD */}
       <div style={section}>
         <h3>Add Booking</h3>
 
-        <input
-          style={input}
-          placeholder="Guest name"
+        <input style={input} placeholder="Guest name"
           value={guestName}
-          onChange={(e) => setGuestName(e.target.value)}
-        />
+          onChange={(e) => setGuestName(e.target.value)} />
 
-        <input
-          style={input}
-          type="date"
+        <input style={input} type="date"
           value={checkIn}
-          onChange={(e) => setCheckIn(e.target.value)}
-        />
+          onChange={(e) => setCheckIn(e.target.value)} />
 
-        <input
-          style={input}
-          type="date"
+        <input style={input} type="date"
           value={checkOut}
-          onChange={(e) => setCheckOut(e.target.value)}
-        />
+          onChange={(e) => setCheckOut(e.target.value)} />
 
-        <input
-          style={input}
-          type="number"
-          placeholder="Price per night"
+        <input style={input} type="number"
+          placeholder="Price"
           value={price}
-          onChange={(e) => setPrice(e.target.value)}
-        />
+          onChange={(e) => setPrice(e.target.value)} />
 
-        <select
-          style={input}
+        <select style={input}
           value={villaId}
-          onChange={(e) => setVillaId(e.target.value)}
-        >
+          onChange={(e) => setVillaId(e.target.value)}>
           <option value="">Select villa</option>
           {villas.map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.name}
-            </option>
+            <option key={v.id} value={v.id}>{v.name}</option>
           ))}
         </select>
 
@@ -164,8 +190,7 @@ export default function Home() {
 
         {bookings.map((b) => {
           const nights =
-            (new Date(b.check_out).getTime() -
-              new Date(b.check_in).getTime()) /
+            (new Date(b.check_out) as any - new Date(b.check_in) as any) /
             (1000 * 60 * 60 * 24)
 
           const total = nights * (b.price_per_night || 0)
@@ -175,20 +200,14 @@ export default function Home() {
             <div key={b.id} style={bookingRow}>
               <div>
                 <b>{b.guest_name}</b>
-                <p>
-                  {b.check_in} → {b.check_out}
-                </p>
-                <p style={{ opacity: 0.6 }}>
-                  {villa?.name || 'No villa'}
-                </p>
+                <p>{b.check_in} → {b.check_out}</p>
+                <p style={{ opacity: 0.6 }}>{villa?.name}</p>
               </div>
 
               <div style={{ textAlign: 'right' }}>
                 <p>${total}</p>
-                <button
-                  style={deleteBtn}
-                  onClick={() => deleteBooking(b.id)}
-                >
+                <button style={deleteBtn}
+                  onClick={() => deleteBooking(b.id)}>
                   ❌
                 </button>
               </div>
@@ -200,11 +219,10 @@ export default function Home() {
   )
 }
 
-// 🎨 STYLES
+// 🎨 styles
 
 const container = {
   padding: 30,
-  fontFamily: 'Arial',
   background: '#000',
   minHeight: '100vh',
   color: 'white',
