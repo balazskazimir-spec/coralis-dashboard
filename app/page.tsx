@@ -2,15 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from 'recharts'
 
 type Booking = {
   id: string
@@ -18,30 +9,33 @@ type Booking = {
   check_in: string
   check_out: string
   price_per_night: number | null
+  villa_id: string | null
+}
+
+type Villa = {
+  id: string
+  name: string
 }
 
 export default function Home() {
   const [bookings, setBookings] = useState<Booking[]>([])
-  const [loading, setLoading] = useState(true)
-
-  const investment = 200000
+  const [villas, setVillas] = useState<Villa[]>([])
+  const [selectedVilla, setSelectedVilla] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchBookings()
+    loadData()
   }, [])
 
-  async function fetchBookings() {
-    const { data, error } = await supabase
-      .from('bookings')
-      .select('*')
-      .order('check_in', { ascending: true })
+  async function loadData() {
+    const { data: b } = await supabase.from('bookings').select('*')
+    const { data: v } = await supabase.from('villas').select('*')
 
-    if (error) {
-      console.error(error)
+    setBookings((b as any) || [])
+    setVillas((v as any) || [])
+
+    if (v && v.length > 0) {
+      setSelectedVilla(v[0].id)
     }
-
-    setBookings((data as Booking[]) || [])
-    setLoading(false)
   }
 
   function nights(b: Booking) {
@@ -52,110 +46,93 @@ export default function Home() {
     )
   }
 
-  const totalNights = bookings.reduce((a, b) => a + nights(b), 0)
+  const filtered = bookings.filter(
+    (b) => b.villa_id === selectedVilla
+  )
 
-  const totalRevenue = bookings.reduce(
+  const totalRevenue = filtered.reduce(
     (a, b) => a + nights(b) * (b.price_per_night || 0),
     0
   )
 
-  const avgNight =
-    totalNights > 0 ? totalRevenue / totalNights : 0
+  const totalNights = filtered.reduce((a, b) => a + nights(b), 0)
 
-  const monthlyRevenue = useMemo(() => {
-    const map: Record<string, number> = {}
+  const occupancy = Math.min(
+    (totalNights / 30) * 100,
+    100
+  )
 
-    bookings.forEach((b) => {
-      const month = b.check_in.slice(0, 7)
-      const rev = nights(b) * (b.price_per_night || 0)
-      map[month] = (map[month] || 0) + rev
+  /* -------- CALENDAR -------- */
+
+  const days = Array.from({ length: 30 }, (_, i) => i + 1)
+
+  function isBooked(day: number) {
+    return filtered.some((b) => {
+      const start = new Date(b.check_in).getDate()
+      const end = new Date(b.check_out).getDate()
+      return day >= start && day < end
     })
-
-    return Object.keys(map).map((m) => ({
-      month: m,
-      revenue: map[m],
-    }))
-  }, [bookings])
-
-  const forecastMonthly = avgNight * 30
-  const forecastYearly = forecastMonthly * 12
-  const roi = (forecastYearly / investment) * 100
-
-  if (loading) return <div style={styles.page}>Loading...</div>
+  }
 
   return (
     <div style={styles.page}>
-      {/* SIDEBAR */}
       <div style={styles.sidebar}>
-        <h2 style={{ marginBottom: 30 }}>Coralis</h2>
+        <h2>Coralis</h2>
 
-        <Nav label="Dashboard" active />
-        <Nav label="Bookings" />
-        <Nav label="Villas" />
-        <Nav label="Analytics" />
+        {villas.map((v) => (
+          <div
+            key={v.id}
+            onClick={() => setSelectedVilla(v.id)}
+            style={{
+              padding: 10,
+              cursor: 'pointer',
+              opacity: selectedVilla === v.id ? 1 : 0.6,
+            }}
+          >
+            {v.name}
+          </div>
+        ))}
       </div>
 
-      {/* MAIN */}
       <div style={styles.main}>
-        <h1 style={{ marginBottom: 30 }}>Investor Dashboard</h1>
+        <h1>Villa Dashboard</h1>
 
         {/* KPI */}
         <div style={styles.grid}>
           <Card title="Revenue" value={`$${Math.round(totalRevenue)}`} />
-          <Card title="Avg Night" value={`$${Math.round(avgNight)}`} />
-          <Card title="ROI" value={`${roi.toFixed(1)}%`} />
           <Card title="Nights" value={Math.round(totalNights)} />
+          <Card title="Occupancy" value={`${occupancy.toFixed(1)}%`} />
         </div>
 
-        {/* CHART */}
-        <div style={styles.chart}>
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={monthlyRevenue}>
-              <defs>
-                <linearGradient id="color" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.8} />
-                  <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-
-              <CartesianGrid stroke="#222" />
-              <XAxis dataKey="month" stroke="#888" />
-              <YAxis stroke="#888" />
-              <Tooltip />
-
-              <Line
-                type="monotone"
-                dataKey="revenue"
-                stroke="#8b5cf6"
-                strokeWidth={3}
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* FORECAST */}
-        <div style={styles.forecast}>
-          <Forecast label="Monthly" value={forecastMonthly} />
-          <Forecast label="Yearly" value={forecastYearly} />
-          <Forecast label="ROI" value={roi} isPercent />
+        {/* CALENDAR */}
+        <div style={styles.calendar}>
+          {days.map((d) => (
+            <div
+              key={d}
+              style={{
+                ...styles.day,
+                background: isBooked(d)
+                  ? '#8b5cf6'
+                  : 'rgba(255,255,255,0.05)',
+              }}
+            >
+              {d}
+            </div>
+          ))}
         </div>
 
         {/* BOOKINGS */}
         <div style={styles.table}>
-          <h3 style={{ marginBottom: 20 }}>Bookings</h3>
-
-          {bookings.map((b) => (
+          {filtered.map((b) => (
             <div key={b.id} style={styles.row}>
               <div>
-                <div style={{ fontWeight: 600 }}>{b.guest_name}</div>
-
-                <div style={styles.sub}>
+                {b.guest_name}
+                <div style={{ opacity: 0.6 }}>
                   {b.check_in} → {b.check_out}
                 </div>
               </div>
 
-              <div style={styles.price}>
+              <div>
                 $
                 {Math.round(
                   nights(b) * (b.price_per_night || 0)
@@ -169,43 +146,13 @@ export default function Home() {
   )
 }
 
-/* ---------- COMPONENTS ---------- */
-
-function Nav({ label, active }: any) {
-  return (
-    <div
-      style={{
-        marginBottom: 12,
-        padding: '10px 14px',
-        borderRadius: 10,
-        background: active ? 'rgba(139,92,246,0.2)' : 'transparent',
-        cursor: 'pointer',
-        opacity: active ? 1 : 0.7,
-      }}
-    >
-      {label}
-    </div>
-  )
-}
+/* ---------- UI ---------- */
 
 function Card({ title, value }: any) {
   return (
     <div style={styles.card}>
-      <div style={styles.label}>{title}</div>
-      <div style={styles.value}>{value}</div>
-    </div>
-  )
-}
-
-function Forecast({ label, value, isPercent }: any) {
-  return (
-    <div style={styles.forecastBox}>
-      <div style={styles.label}>{label}</div>
-      <div style={styles.value}>
-        {isPercent
-          ? `${value.toFixed(1)}%`
-          : `$${Math.round(value)}`}
-      </div>
+      <div style={{ opacity: 0.6 }}>{title}</div>
+      <div style={{ fontSize: 22 }}>{value}</div>
     </div>
   )
 }
@@ -216,93 +163,57 @@ const styles = {
   page: {
     display: 'flex',
     minHeight: '100vh',
-    background: `
-      radial-gradient(circle at 20% 20%, #8b5cf6 0%, transparent 40%),
-      radial-gradient(circle at 80% 0%, #6366f1 0%, transparent 40%),
-      #020617
-    `,
+    background: '#020617',
     color: 'white',
-    fontFamily: 'sans-serif',
   },
 
   sidebar: {
-    width: 240,
+    width: 200,
     padding: 20,
-    background: 'rgba(17,24,39,0.7)',
-    backdropFilter: 'blur(12px)',
-    borderRight: '1px solid rgba(255,255,255,0.05)',
+    borderRight: '1px solid #111',
   },
 
   main: {
     flex: 1,
-    padding: 40,
+    padding: 30,
   },
 
   grid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4, 1fr)',
+    display: 'flex',
     gap: 20,
     marginBottom: 30,
   },
 
   card: {
     padding: 20,
-    borderRadius: 18,
-    background:
-      'linear-gradient(145deg, rgba(30,41,59,0.9), rgba(15,23,42,0.9))',
-    border: '1px solid rgba(255,255,255,0.08)',
-    boxShadow: '0 10px 30px rgba(0,0,0,0.4)',
+    background: '#111827',
+    borderRadius: 12,
   },
 
-  chart: {
-    background: 'rgba(17,24,39,0.8)',
-    borderRadius: 20,
-    padding: 20,
+  calendar: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(10, 1fr)',
+    gap: 6,
     marginBottom: 30,
   },
 
-  forecast: {
-    display: 'flex',
-    gap: 20,
-    marginBottom: 30,
-  },
-
-  forecastBox: {
-    padding: 16,
-    borderRadius: 14,
-    background: 'rgba(255,255,255,0.03)',
+  day: {
+    padding: 10,
+    textAlign: 'center' as const,
+    borderRadius: 6,
+    fontSize: 12,
   },
 
   table: {
+    background: '#111827',
     padding: 20,
-    borderRadius: 20,
-    background: 'rgba(17,24,39,0.8)',
+    borderRadius: 12,
   },
 
   row: {
     display: 'flex',
     justifyContent: 'space-between',
-    padding: 16,
-    borderBottom: '1px solid rgba(255,255,255,0.05)',
-  },
-
-  label: {
-    opacity: 0.6,
-    fontSize: 13,
-  },
-
-  value: {
-    fontSize: 24,
-    fontWeight: 600,
-  },
-
-  sub: {
-    opacity: 0.6,
-    fontSize: 13,
-  },
-
-  price: {
-    fontWeight: 600,
-    color: '#8b5cf6',
+    padding: 10,
+    borderBottom: '1px solid #222',
   },
 }
