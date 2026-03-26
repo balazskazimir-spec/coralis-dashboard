@@ -1,7 +1,7 @@
 'use client'
 
 import { createContext, useContext, useMemo, useSyncExternalStore } from 'react'
-import { DEFAULT_USERS } from '@/lib/access'
+import { DEFAULT_USERS, normalizeUsers } from '@/lib/access'
 import type { AppUser } from '@/lib/types'
 
 type RoleContextValue = {
@@ -40,7 +40,8 @@ function readUsersSnapshot() {
   try {
     const parsedUsers = JSON.parse(storedUsers) as AppUser[]
     cachedUsersRaw = storedUsers
-    cachedUsersSnapshot = Array.isArray(parsedUsers) && parsedUsers.length > 0 ? parsedUsers : DEFAULT_USERS
+    cachedUsersSnapshot =
+      Array.isArray(parsedUsers) && parsedUsers.length > 0 ? normalizeUsers(parsedUsers) : DEFAULT_USERS
     return cachedUsersSnapshot
   } catch {
     cachedUsersRaw = null
@@ -96,13 +97,15 @@ export function RoleProvider({ children }: { children: React.ReactNode }) {
   }
 
   function updateUser(userId: string, updates: Partial<AppUser>) {
-    const nextUsers = users.map((user) =>
-      user.id === userId
-        ? {
-            ...user,
-            ...updates,
-          }
-        : user
+    const nextUsers = normalizeUsers(
+      users.map((user) =>
+        user.id === userId
+          ? {
+              ...user,
+              ...updates,
+            }
+          : user
+      )
     )
 
     window.localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(nextUsers))

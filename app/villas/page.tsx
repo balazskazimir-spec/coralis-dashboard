@@ -23,15 +23,23 @@ export default function VillasPage() {
   }, [])
 
   const visibleVillas = filterVillasForUser(villas, currentUser)
+  const title = currentUser.role === 'admin' ? 'All Villas' : currentUser.role === 'investor' ? 'My Villas' : 'Assigned Villas'
+  const copy =
+    currentUser.role === 'admin'
+      ? 'Full portfolio villa directory.'
+      : currentUser.role === 'investor'
+        ? 'Your assigned investment villas.'
+        : 'Operationally assigned villas.'
 
   return (
     <div style={styles.page}>
-      <h1 style={styles.title}>All Villas</h1>
+      <h1 style={styles.title}>{title}</h1>
+      <p style={styles.copy}>{copy}</p>
 
       <div style={styles.grid}>
         {loading ? (
           <p>Loading...</p>
-        ) : (
+        ) : visibleVillas.length ? (
           visibleVillas.map((villa) => (
             <Link key={villa.id} href={`/villas/${villa.id}`} style={styles.link}>
               <div style={styles.card}>
@@ -39,6 +47,8 @@ export default function VillasPage() {
               </div>
             </Link>
           ))
+        ) : (
+          <div style={styles.emptyCard}>No villas are assigned to this profile yet.</div>
         )}
       </div>
     </div>
@@ -53,7 +63,13 @@ const styles = {
 
   title: {
     fontSize: 28,
+    marginBottom: 8,
+  },
+
+  copy: {
+    marginTop: 0,
     marginBottom: 20,
+    color: 'rgba(255,255,255,0.7)',
   },
 
   grid: {
@@ -72,5 +88,12 @@ const styles = {
     background: 'rgba(17,24,39,0.7)',
     cursor: 'pointer',
     transition: 'background 0.2s',
+  },
+
+  emptyCard: {
+    padding: 20,
+    borderRadius: 16,
+    background: 'rgba(17,24,39,0.7)',
+    color: 'rgba(255,255,255,0.72)',
   },
 }

@@ -33,6 +33,7 @@ export default function Sidebar() {
   const visibleVillas = filterVillasForUser(villas, currentUser)
   const isStaff = currentUser.role === 'staff'
   const isAdmin = currentUser.role === 'admin'
+  const isInvestor = currentUser.role === 'investor'
 
   return (
     <div style={styles.sidebar}>
@@ -89,12 +90,12 @@ export default function Sidebar() {
 
           <div>
             <div style={styles.group} onClick={() => setOpen(!open)}>
-              Villas
+              {isInvestor ? 'Assigned Villas' : 'Villas'}
             </div>
 
             {open ? (
               <div style={styles.submenu}>
-                <Nav href="/villas" label="All Villas" active={path === '/villas'} />
+                <Nav href="/villas" label={isInvestor ? 'My Villas' : 'All Villas'} active={path === '/villas'} />
                 {visibleVillas.map((villa) => (
                   <Nav key={villa.id} href={`/villas/${villa.id}`} label={villa.name} active={path === `/villas/${villa.id}`} />
                 ))}

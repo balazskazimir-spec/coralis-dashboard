@@ -507,15 +507,21 @@ export default function Page() {
     return <StaffDashboard />
   }
 
-  if (loading && currentUser.role === 'admin') {
+  if (loading) {
     return (
       <div style={styles.page}>
         <div style={styles.panelGold}>
           <div style={styles.sectionHeader}>
             <div>
               <div style={styles.brand}>Coralis Dashboard</div>
-              <h2 style={styles.sectionTitle}>Loading portfolio data</h2>
-              <div style={styles.subtle}>The admin dashboard is pulling live villas, bookings, expenses, tasks, and issues.</div>
+              <h2 style={styles.sectionTitle}>
+                {currentUser.role === 'admin' ? 'Loading portfolio data' : 'Loading assigned portfolio'}
+              </h2>
+              <div style={styles.subtle}>
+                {currentUser.role === 'admin'
+                  ? 'The admin dashboard is pulling live villas, bookings, expenses, tasks, and issues.'
+                  : 'Preparing the latest bookings, expenses, and performance for your assigned villas.'}
+              </div>
             </div>
           </div>
         </div>
@@ -528,6 +534,7 @@ export default function Page() {
     return (
       <div style={styles.page}>
         <div style={styles.header}><div><div style={styles.brand}>Coralis Dashboard</div><h1 style={styles.title}>Assigned Portfolio</h1></div></div>
+        {!visibleVillas.length ? <div style={styles.emptyState}>No villas are assigned to this investor profile yet.</div> : null}
         <div style={styles.kpiGrid}>
           <PortfolioKpi title="Revenue" value={formatCompactCurrency(totalRevenue)} subtext={formatCurrency(totalRevenue)} accent="#c6a96b" chip="Revenue" featured />
           <PortfolioKpi title="Expenses" value={formatCompactCurrency(totalCost)} subtext={formatCurrency(totalCost)} accent="#ef4444" chip="Cost" featured />
