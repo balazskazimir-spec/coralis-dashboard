@@ -37,12 +37,15 @@ const DISPLAY_RATES: Record<Currency, { locale: string; code: Currency }> = {
 }
 
 const PIE_COLORS = ['#8b5cf6', '#f97316', '#22c55e', '#3b82f6', '#ef4444', '#0ea5e9']
-const EXPENSE_CATEGORIES = ['cleaning', 'maintenance', 'utilities', 'staff'] as const
+const EXPENSE_CATEGORIES = ['cleaning', 'maintenance', 'utilities', 'staff', 'supplies', 'transport', 'other'] as const
 const CATEGORY_COLORS: Record<(typeof EXPENSE_CATEGORIES)[number], string> = {
   cleaning: '#34d399',
   maintenance: '#ef4444',
   utilities: '#38bdf8',
   staff: '#f59e0b',
+  supplies: '#f472b6',
+  transport: '#facc15',
+  other: '#94a3b8',
 }
 const HIGH_EXPENSE_PER_NIGHT_IDR = 900_000
 const CRITICAL_EXPENSE_PER_NIGHT_IDR = 1_250_000
@@ -390,13 +393,24 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
           maintenance: 0,
           utilities: 0,
           staff: 0,
+          supplies: 0,
+          transport: 0,
+          other: 0,
         }
       }
 
       const amount = Number(expense.amount) * currencyRate
       map[monthKey].expenses += amount
 
-      if (expense.category === 'cleaning' || expense.category === 'maintenance' || expense.category === 'utilities' || expense.category === 'staff') {
+      if (
+        expense.category === 'cleaning' ||
+        expense.category === 'maintenance' ||
+        expense.category === 'utilities' ||
+        expense.category === 'staff' ||
+        expense.category === 'supplies' ||
+        expense.category === 'transport' ||
+        expense.category === 'other'
+      ) {
         const categoryKey = expense.category
         map[monthKey][categoryKey] = Number(map[monthKey][categoryKey] || 0) + amount
       }
@@ -418,6 +432,9 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
           maintenance: 0,
           utilities: 0,
           staff: 0,
+          supplies: 0,
+          transport: 0,
+          other: 0,
         }
       }
 

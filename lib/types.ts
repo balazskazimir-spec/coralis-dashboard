@@ -94,6 +94,9 @@ export type RevenueExpensePoint = {
   maintenance?: number
   utilities?: number
   staff?: number
+  supplies?: number
+  transport?: number
+  other?: number
   smoothedExpenses?: number
   monthKey?: string
 }

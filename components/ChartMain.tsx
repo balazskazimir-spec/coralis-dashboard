@@ -30,6 +30,9 @@ const SERIES_LABELS: Record<string, string> = {
   maintenance: 'Maintenance',
   utilities: 'Utilities',
   staff: 'Staff',
+  supplies: 'Supplies',
+  transport: 'Transport',
+  other: 'Other',
   smoothedExpenses: 'Smoothed Spend',
 }
 
@@ -41,9 +44,23 @@ const SERIES_COLORS: Record<string, string> = {
   maintenance: '#ef4444',
   utilities: '#38bdf8',
   staff: '#f59e0b',
+  supplies: '#f472b6',
+  transport: '#facc15',
+  other: '#94a3b8',
 }
 
-const EXPENSE_TOOLTIP_ORDER = ['profit', 'revenue', 'expenses', 'staff', 'maintenance', 'utilities', 'cleaning']
+const EXPENSE_TOOLTIP_ORDER = [
+  'profit',
+  'revenue',
+  'expenses',
+  'staff',
+  'maintenance',
+  'utilities',
+  'cleaning',
+  'supplies',
+  'transport',
+  'other',
+]
 
 function getMonthKeyFromEvent(payload: unknown) {
   if (typeof payload !== 'object' || payload === null || !('activePayload' in payload)) {
@@ -63,6 +80,9 @@ function renderSeries(mode: ChartMode) {
         <Area type="monotone" dataKey="maintenance" stackId="expense" stroke="#ef4444" fill="url(#maintenanceFill)" strokeWidth={2} />
         <Area type="monotone" dataKey="utilities" stackId="expense" stroke="#38bdf8" fill="url(#utilitiesFill)" strokeWidth={2} />
         <Area type="monotone" dataKey="cleaning" stackId="expense" stroke="#34d399" fill="url(#cleaningFill)" strokeWidth={2} />
+        <Area type="monotone" dataKey="supplies" stackId="expense" stroke="#f472b6" fill="url(#suppliesFill)" strokeWidth={2} />
+        <Area type="monotone" dataKey="transport" stackId="expense" stroke="#facc15" fill="url(#transportFill)" strokeWidth={2} />
+        <Area type="monotone" dataKey="other" stackId="expense" stroke="#94a3b8" fill="url(#otherFill)" strokeWidth={2} />
         <Line type="monotone" dataKey="profit" stroke="#22c55e" strokeWidth={3} dot={false} activeDot={{ r: 5, strokeWidth: 0 }} />
         <Line type="monotone" dataKey="revenue" stroke="#a78bfa" strokeWidth={2.5} strokeDasharray="6 6" dot={false} />
         <Line type="monotone" dataKey="expenses" stroke="#f8fafc" strokeWidth={3} dot={false} activeDot={{ r: 5, strokeWidth: 0 }} />
@@ -194,6 +214,18 @@ export default function ChartMain({ data, mode, tooltipFormatter, axisFormatter,
             <linearGradient id="cleaningFill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#34d399" stopOpacity={0.45} />
               <stop offset="95%" stopColor="#34d399" stopOpacity={0.08} />
+            </linearGradient>
+            <linearGradient id="suppliesFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#f472b6" stopOpacity={0.45} />
+              <stop offset="95%" stopColor="#f472b6" stopOpacity={0.08} />
+            </linearGradient>
+            <linearGradient id="transportFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#facc15" stopOpacity={0.45} />
+              <stop offset="95%" stopColor="#facc15" stopOpacity={0.08} />
+            </linearGradient>
+            <linearGradient id="otherFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="#94a3b8" stopOpacity={0.45} />
+              <stop offset="95%" stopColor="#94a3b8" stopOpacity={0.08} />
             </linearGradient>
           </defs>
 
