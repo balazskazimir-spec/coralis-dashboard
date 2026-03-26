@@ -1,12 +1,18 @@
-export function Grid4({ children }: any) {
+import type { ReactNode } from 'react'
+
+type GridProps = {
+  children: ReactNode
+}
+
+export function Grid4({ children }: GridProps) {
   return <div style={styles.grid4}>{children}</div>
 }
 
-export function GridChart({ children }: any) {
+export function GridChart({ children }: GridProps) {
   return <div style={styles.chart}>{children}</div>
 }
 
-export function Column({ children }: any) {
+export function Column({ children }: GridProps) {
   return <div style={styles.col}>{children}</div>
 }
 
@@ -27,7 +33,7 @@ const styles = {
 
   col: {
     display: 'flex',
-    flexDirection: 'column',
+    flexDirection: 'column' as const,
     gap: 20,
   },
 }

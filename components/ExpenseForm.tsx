@@ -3,7 +3,11 @@
 import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
 
-export default function ExpenseForm({ onAdded }: any) {
+type ExpenseFormProps = {
+  onAdded: () => void
+}
+
+export default function ExpenseForm({ onAdded }: ExpenseFormProps) {
   const [amount, setAmount] = useState('')
   const [date, setDate] = useState('')
   const [category, setCategory] = useState('cleaning')
@@ -11,7 +15,10 @@ export default function ExpenseForm({ onAdded }: any) {
   const [villa, setVilla] = useState('villa-1')
 
   async function addExpense() {
-    if (!amount || !date) return alert('missing data')
+    if (!amount || !date) {
+      alert('missing data')
+      return
+    }
 
     await supabase.from('expenses').insert([
       {
@@ -55,8 +62,8 @@ export default function ExpenseForm({ onAdded }: any) {
       </select>
 
       <select value={villa} onChange={(e) => setVilla(e.target.value)} style={styles.input}>
-        <option value="villa-1">Villa 1</option>
-        <option value="villa-2">Villa 2</option>
+        <option value="villa-1">Villa Serra</option>
+        <option value="villa-2">Villa Mira</option>
       </select>
 
       <input

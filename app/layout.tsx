@@ -1,13 +1,9 @@
 import './globals.css'
+import Providers from './providers'
 import Sidebar from '@/components/Sidebar'
-import { Inter } from 'next/font/google'
+import type { Metadata } from 'next'
 
-const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-inter',
-})
-
-export const metadata = {
+export const metadata: Metadata = {
   title: 'Coralis Dashboard',
   description: 'Luxury Villa Dashboard',
 }
@@ -18,12 +14,14 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className={inter.variable}>
-      <body style={{ margin: 0, fontFamily: 'var(--font-inter)' }}>
-        <div style={{ display: 'flex' }}>
-          <Sidebar />
-          <div style={{ flex: 1 }}>{children}</div>
-        </div>
+    <html lang="en">
+      <body style={{ margin: 0, fontFamily: 'Inter, system-ui, sans-serif' }}>
+        <Providers>
+          <div style={{ display: 'flex' }}>
+            <Sidebar />
+            <div style={{ flex: 1 }}>{children}</div>
+          </div>
+        </Providers>
       </body>
     </html>
   )

@@ -1,6 +1,11 @@
+import type { ReactNode } from 'react'
 import { tokens } from './tokens'
 
-export default function Card({ children }: any) {
+type CardProps = {
+  children: ReactNode
+}
+
+export default function Card({ children }: CardProps) {
   return <div style={styles.card}>{children}</div>
 }
 

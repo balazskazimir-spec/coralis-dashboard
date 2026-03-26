@@ -1,4 +1,10 @@
-export default function KPI({ title, value, trend }: any) {
+type KPIProps = {
+  title: string
+  value: string
+  trend?: string
+}
+
+export default function KPI({ title, value, trend }: KPIProps) {
   return (
     <div style={styles.card}>
       <div style={styles.top}>

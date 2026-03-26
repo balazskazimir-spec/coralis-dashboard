@@ -1,21 +1,30 @@
-export default function BookingList({ bookings, nights }: any) {
+import type { BookingRecord } from '@/lib/types'
+
+type BookingListProps = {
+  bookings: BookingRecord[]
+  nights: (booking: BookingRecord) => number
+}
+
+export default function BookingList({ bookings, nights }: BookingListProps) {
   return (
     <div style={styles.table}>
       <h3 style={{ marginBottom: 20 }}>Bookings</h3>
 
-      {bookings.map((b: any) => (
-        <div key={b.id} style={styles.row}>
+      {bookings.map((booking) => (
+        <div key={booking.id} style={styles.row}>
           <div>
-            <div style={{ fontWeight: 600 }}>{b.guest_name}</div>
+            <div style={{ fontWeight: 600 }}>{booking.guest_name}</div>
             <div style={styles.sub}>
-              {b.check_in} → {b.check_out}
+              {booking.check_in}
+              {' -> '}
+              {booking.check_out}
             </div>
           </div>
 
           <div style={styles.price}>
             $
             {Math.round(
-              nights(b) * (b.price_per_night || 0)
+              nights(booking) * (booking.price_per_night || 0)
             )}
           </div>
         </div>

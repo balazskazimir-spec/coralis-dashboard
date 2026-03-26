@@ -1,4 +1,16 @@
-export default function Forecast({ monthly, yearly, roi }: any) {
+type ForecastProps = {
+  monthly: number
+  yearly: number
+  roi: number
+}
+
+type ForecastBoxProps = {
+  label: string
+  value: number
+  percent?: boolean
+}
+
+export default function Forecast({ monthly, yearly, roi }: ForecastProps) {
   return (
     <div style={styles.wrap}>
       <Box label="Monthly" value={monthly} />
@@ -8,7 +20,7 @@ export default function Forecast({ monthly, yearly, roi }: any) {
   )
 }
 
-function Box({ label, value, percent }: any) {
+function Box({ label, value, percent }: ForecastBoxProps) {
   return (
     <div style={styles.box}>
       <div style={styles.label}>{label}</div>

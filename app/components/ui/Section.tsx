@@ -1,6 +1,12 @@
+import type { ReactNode } from 'react'
 import { tokens } from './tokens'
 
-export default function Section({ title, children }: any) {
+type SectionProps = {
+  title?: string
+  children: ReactNode
+}
+
+export default function Section({ title, children }: SectionProps) {
   return (
     <div style={{ marginBottom: tokens.spacing.xl }}>
       {title && (

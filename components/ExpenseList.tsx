@@ -1,8 +1,14 @@
 'use client'
 
 import { supabase } from '@/lib/supabase'
+import type { ExpenseRecord } from '@/lib/types'
 
-export default function ExpenseList({ expenses, refresh }: any) {
+type ExpenseListProps = {
+  expenses: ExpenseRecord[]
+  refresh: () => void
+}
+
+export default function ExpenseList({ expenses, refresh }: ExpenseListProps) {
   async function remove(id: string) {
     await supabase.from('expenses').delete().eq('id', id)
     refresh()
@@ -12,18 +18,18 @@ export default function ExpenseList({ expenses, refresh }: any) {
     <div style={styles.box}>
       <h3>Expenses</h3>
 
-      {expenses.map((e: any) => (
-        <div key={e.id} style={styles.row}>
+      {expenses.map((expense) => (
+        <div key={expense.id} style={styles.row}>
           <div>
-            <div>{e.category}</div>
+            <div>{expense.category}</div>
             <div style={styles.sub}>
-              {e.date} • {e.note}
+              {expense.date} - {expense.note}
             </div>
           </div>
 
           <div style={styles.right}>
-            <span>${e.amount}</span>
-            <button onClick={() => remove(e.id)} style={styles.delete}>
+            <span>${expense.amount}</span>
+            <button onClick={() => remove(expense.id)} style={styles.delete}>
               x
             </button>
           </div>
