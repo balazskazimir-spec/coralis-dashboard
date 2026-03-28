@@ -39,6 +39,26 @@ export async function GET() {
       .select('*')
       .limit(1)
 
+    const { data: invoiceConfigs, error: invoiceConfigsError } = await supabase
+      .from('invoice_configs')
+      .select('*')
+      .limit(1)
+
+    const { data: investorInvoices, error: investorInvoicesError } = await supabase
+      .from('investor_invoices')
+      .select('*')
+      .limit(1)
+
+    const { data: investorInvoiceItems, error: investorInvoiceItemsError } = await supabase
+      .from('investor_invoice_items')
+      .select('*')
+      .limit(1)
+
+    const { data: managementFeeConfigs, error: managementFeeConfigsError } = await supabase
+      .from('management_fee_configs')
+      .select('*')
+      .limit(1)
+
     return Response.json({
       bookings: {
         sample: bookings?.[0] || null,
@@ -67,6 +87,22 @@ export async function GET() {
       expense_submissions: {
         sample: expenseSubmissions?.[0] || null,
         error: expenseSubmissionsError,
+      },
+      invoice_configs: {
+        sample: invoiceConfigs?.[0] || null,
+        error: invoiceConfigsError,
+      },
+      investor_invoices: {
+        sample: investorInvoices?.[0] || null,
+        error: investorInvoicesError,
+      },
+      investor_invoice_items: {
+        sample: investorInvoiceItems?.[0] || null,
+        error: investorInvoiceItemsError,
+      },
+      management_fee_configs: {
+        sample: managementFeeConfigs?.[0] || null,
+        error: managementFeeConfigsError,
       },
     })
   } catch (error) {

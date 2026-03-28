@@ -47,6 +47,19 @@ export type ExpenseRecord = {
   vendor?: string | null
 }
 
+export type ManagementFeeType = 'none' | 'percentage' | 'fixed'
+
+export type ManagementFeeConfigRecord = {
+  villa_id: string
+  fee_type: string
+  percentage_rate: number | string | null
+  fixed_amount: number | string | null
+  updated_by_user_id: string | null
+  updated_by_name: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
 export type ExpenseSubmissionRecord = {
   id: string
   expense_id: string
@@ -63,6 +76,130 @@ export type ExpenseSubmissionRecord = {
   flagged_reason: string | null
   created_at?: string | null
   updated_at?: string | null
+}
+
+export type InvestorInvoiceStatus = 'Ready' | 'Pending Review' | 'Draft'
+export type InvestorInvoicePaymentStatus = 'Unpaid' | 'Paid'
+
+export type InvestorInvoiceLineItem = {
+  lineItemKey: string
+  expenseId: string
+  submissionId: string | null
+  villaId: string | null
+  villaName: string
+  date: string
+  category: string
+  amount: number
+  vendor: string
+  note: string
+  submittedBy: string
+  status: string
+  receiptName: string | null
+  receiptDataUrl: string | null
+}
+
+export type InvestorInvoice = {
+  id: string
+  invoiceNumber: string
+  villaId: string | null
+  villaName: string
+  periodKey: string
+  periodLabel: string
+  createdAt: string
+  dueDate: string
+  totalAmount: number
+  lineItems: InvestorInvoiceLineItem[]
+  status: InvestorInvoiceStatus
+  paymentStatus: InvestorInvoicePaymentStatus
+  readyAmount: number
+  reviewAmount: number
+  creationMode: 'auto' | 'manual'
+  createdByName: string
+  thresholdApplied: number
+  lineItemKeys: string[]
+  coveredRangeLabel: string
+}
+
+export type InvoiceThresholdConfig = {
+  minimumAmount: number
+}
+
+export type InvoiceConfigRecord = {
+  id: string
+  minimum_amount: number | string
+  updated_by_user_id: string | null
+  updated_by_name: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type InvoiceCreationRecord = {
+  id: string
+  villaId: string | null
+  lineItemKeys: string[]
+  createdAt: string
+  createdByUserId: string
+  createdByName: string
+  forced: boolean
+  thresholdAtCreation: number
+}
+
+export type PendingInvoiceBucket = {
+  id: string
+  villaId: string | null
+  villaName: string
+  totalAmount: number
+  readyAmount: number
+  reviewAmount: number
+  threshold: number
+  amountToThreshold: number
+  firstDate: string
+  lastDate: string
+  coveredRangeLabel: string
+  lineItems: InvestorInvoiceLineItem[]
+}
+
+export type InvestorInvoiceRecord = {
+  id: string
+  invoice_number: string
+  villa_id: string | null
+  villa_name: string
+  period_key: string
+  period_label: string
+  covered_range_label: string
+  created_at: string
+  due_date: string
+  total_amount: number | string
+  ready_amount: number | string
+  review_amount: number | string
+  workflow_status: string
+  payment_status: string
+  paid_at: string | null
+  creation_mode: string
+  created_by_user_id: string | null
+  created_by_name: string
+  threshold_applied: number | string
+  forced: boolean | null
+}
+
+export type InvestorInvoiceItemRecord = {
+  id: string
+  invoice_id: string
+  line_item_key: string
+  expense_id: string
+  submission_id: string | null
+  villa_id: string | null
+  villa_name: string
+  expense_date: string
+  category: string
+  amount: number | string
+  vendor: string | null
+  note: string | null
+  submitted_by: string
+  expense_status: string
+  receipt_name: string | null
+  receipt_data_url: string | null
+  created_at?: string | null
 }
 
 export type StaffExpenseItem = {

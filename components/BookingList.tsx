@@ -3,12 +3,14 @@ import type { BookingRecord } from '@/lib/types'
 type BookingListProps = {
   bookings: BookingRecord[]
   nights: (booking: BookingRecord) => number
+  formatAmount?: (value: number) => string
+  title?: string
 }
 
-export default function BookingList({ bookings, nights }: BookingListProps) {
+export default function BookingList({ bookings, nights, formatAmount, title = 'Bookings' }: BookingListProps) {
   return (
     <div style={styles.table}>
-      <h3 style={{ marginBottom: 20 }}>Bookings</h3>
+      {title ? <h3 style={{ marginBottom: 20 }}>{title}</h3> : null}
 
       {bookings.map((booking) => (
         <div key={booking.id} style={styles.row}>
@@ -22,10 +24,9 @@ export default function BookingList({ bookings, nights }: BookingListProps) {
           </div>
 
           <div style={styles.price}>
-            $
-            {Math.round(
-              nights(booking) * (booking.price_per_night || 0)
-            )}
+            {formatAmount
+              ? formatAmount(Math.round(nights(booking) * (booking.price_per_night || 0)))
+              : `$${Math.round(nights(booking) * (booking.price_per_night || 0))}`}
           </div>
         </div>
       ))}

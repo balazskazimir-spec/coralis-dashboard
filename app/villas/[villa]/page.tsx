@@ -1,7 +1,8 @@
 ﻿'use client'
 
+import Image from 'next/image'
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from 'recharts'
 import { useParams } from 'next/navigation'
 import { canAccessVilla, canEditBookings, canSeeAlerts, canSeeExpenseBreakdown, canSeeProfit, canSeeVendorDetails, filterBookingsForUser, filterExpensesForUser } from '@/lib/access'
@@ -11,14 +12,23 @@ import type { BookingRecord, ExpenseRecord, VillaRecord } from '@/lib/types'
 
 type DateRange = '7d' | '30d' | '90d' | 'ytd' | 'all'
 type Granularity = 'day' | 'week' | 'month'
+type Currency = 'IDR' | 'USD' | 'EUR'
 type DailyMetric = { date: string; revenue: number; expenses: number; profit: number; bookings: BookingRecord[] }
 type BookingForm = { checkIn: string; checkOut: string; guestName: string; price: string; source: string; notes: string }
 
 const DAY = 86400000
 const COLORS = ['#18c29c', '#f97316', '#ef4444', '#3b82f6', '#eab308']
 const EMPTY_FORM: BookingForm = { checkIn: '', checkOut: '', guestName: '', price: '', source: 'Manual', notes: '' }
-
-const money = (n: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n)
+const INVESTOR_VILLA_HERO_IMAGES: Record<string, string> = {
+  'Villa Mira': '/villa-mira-hero.jpg',
+  'Villa Serra': '/villa-serra-hero.jpg',
+}
+const EXCHANGE_RATES: Record<Currency, number> = { IDR: 1, USD: 0.000064, EUR: 0.000059 }
+const DISPLAY_RATES: Record<Currency, { locale: string; code: Currency; min: number; max: number }> = {
+  IDR: { locale: 'id-ID', code: 'IDR', min: 0, max: 0 },
+  USD: { locale: 'en-US', code: 'USD', min: 0, max: 0 },
+  EUR: { locale: 'de-DE', code: 'EUR', min: 0, max: 0 },
+}
 const pct = (n: number) => `${n.toFixed(1)}%`
 const iso = (d: Date) => d.toISOString().slice(0, 10)
 const startDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate())
@@ -47,6 +57,20 @@ function weekKey(d: Date) {
   return iso(copy)
 }
 
+function bookingOverlapsRange(booking: BookingRecord, rangeStart: Date, rangeEndExclusive: Date) {
+  return new Date(booking.check_out) > rangeStart && new Date(booking.check_in) < rangeEndExclusive
+}
+
+function bookingNightsInRange(booking: BookingRecord, rangeStart: Date, rangeEndExclusive: Date) {
+  const overlapStart = Math.max(new Date(booking.check_in).getTime(), rangeStart.getTime())
+  const overlapEnd = Math.min(new Date(booking.check_out).getTime(), rangeEndExclusive.getTime())
+  return Math.max(0, (overlapEnd - overlapStart) / DAY)
+}
+
+function bookingRevenueInRange(booking: BookingRecord, rangeStart: Date, rangeEndExclusive: Date) {
+  return bookingNightsInRange(booking, rangeStart, rangeEndExclusive) * (Number(booking.price_per_night) || 0)
+}
+
 export default function VillaPage() {
   const { currentUser } = useRole()
   const params = useParams<{ villa: string }>()
@@ -58,11 +82,12 @@ export default function VillaPage() {
   const [viewDate, setViewDate] = useState(() => startDay(new Date()))
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [selectedBookingId, setSelectedBookingId] = useState<string | null>(null)
-  const [dateRange, setDateRange] = useState<DateRange>('90d')
+  const [dateRange, setDateRange] = useState<DateRange>(currentUser.role === 'investor' ? 'ytd' : '90d')
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [vendorFilter, setVendorFilter] = useState('all')
   const [search, setSearch] = useState('')
   const [granularity, setGranularity] = useState<Granularity>('day')
+  const [currency, setCurrency] = useState<Currency>('IDR')
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState<BookingForm>(EMPTY_FORM)
@@ -84,31 +109,36 @@ export default function VillaPage() {
 
   const cutoff = cutoffOf(dateRange)
   const cutoffTime = cutoff.getTime()
+  const scopeEndExclusive = new Date(today)
+  scopeEndExclusive.setDate(scopeEndExclusive.getDate() + 1)
   const baseBookings = filterBookingsForUser(bookings, currentUser)
   const baseExpenses = filterExpensesForUser(expenses, currentUser)
-  const filteredBookings = baseBookings.filter((b) => new Date(b.check_in) >= cutoff)
+  const filteredBookings = baseBookings.filter((b) => bookingOverlapsRange(b, cutoff, scopeEndExclusive))
   const filteredExpenses = baseExpenses.filter((e) => {
     if (!e.date) return false
-    if (new Date(e.date) < cutoff) return false
+    const expenseDate = new Date(e.date)
+    if (expenseDate < cutoff || expenseDate >= scopeEndExclusive) return false
     if (categoryFilter !== 'all' && e.category !== categoryFilter) return false
     if (vendorFilter !== 'all' && vendorOf(e) !== vendorFilter) return false
     return true
   })
 
   const monthStart = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1)
-  const monthEnd = new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0)
-  const monthDays = monthEnd.getDate()
+  const gridStartBase = new Date(monthStart)
+  gridStartBase.setDate(monthStart.getDate() - ((monthStart.getDay() + 6) % 7))
+  const calendarEndExclusive = new Date(gridStartBase)
+  calendarEndExclusive.setDate(gridStartBase.getDate() + 42)
+  const calendarBookings = baseBookings.filter((b) => bookingOverlapsRange(b, gridStartBase, calendarEndExclusive))
 
   const daily: Record<string, DailyMetric> = (() => {
     const map: Record<string, DailyMetric> = {}
-    const gridStart = new Date(monthStart)
-    gridStart.setDate(monthStart.getDate() - ((monthStart.getDay() + 6) % 7))
+    const gridStart = new Date(gridStartBase)
     for (let i = 0; i < 42; i += 1) {
       const d = new Date(gridStart)
       d.setDate(gridStart.getDate() + i)
       map[iso(d)] = { date: iso(d), revenue: 0, expenses: 0, profit: 0, bookings: [] }
     }
-    filteredBookings.forEach((b) => {
+    calendarBookings.forEach((b) => {
       const perNight = Number(b.price_per_night) || 0
       for (let d = new Date(b.check_in); d < new Date(b.check_out); d.setDate(d.getDate() + 1)) {
         const key = iso(d)
@@ -129,21 +159,23 @@ export default function VillaPage() {
   })()
 
   const calendarDays = Array.from({ length: 42 }, (_, i) => {
-    const gridStart = new Date(monthStart)
-    gridStart.setDate(monthStart.getDate() - ((monthStart.getDay() + 6) % 7))
+    const gridStart = new Date(gridStartBase)
     const d = new Date(gridStart)
     d.setDate(gridStart.getDate() + i)
     return d
   })
 
-  const totalRevenue = filteredBookings.reduce((s, b) => s + revenue(b), 0)
+  const totalRevenue = filteredBookings.reduce((s, b) => s + bookingRevenueInRange(b, cutoff, scopeEndExclusive), 0)
   const totalCost = filteredExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0)
-  const occupiedNights = filteredBookings.reduce((s, b) => s + nights(b), 0)
+  const occupiedNights = filteredBookings.reduce((s, b) => s + bookingNightsInRange(b, cutoff, scopeEndExclusive), 0)
+  const scopeDays = Math.max(1, Math.round((startDay(today).getTime() - startDay(cutoff).getTime()) / DAY) + 1)
   const profit = totalRevenue - totalCost
+  const annualizedRevenue = (totalRevenue / Math.max(1, scopeDays)) * 365
+  const annualizedProfit = (profit / Math.max(1, scopeDays)) * 365
   const costPerNight = occupiedNights ? totalCost / occupiedNights : 0
   const costPerBooking = filteredBookings.length ? totalCost / filteredBookings.length : 0
   const expenseRatio = totalRevenue ? (totalCost / totalRevenue) * 100 : 0
-  const occupancy = monthDays ? (occupiedNights / monthDays) * 100 : 0
+  const occupancy = Math.min(100, scopeDays ? (occupiedNights / scopeDays) * 100 : 0)
   const adr = occupiedNights ? totalRevenue / occupiedNights : 0
   const maintenanceCost = filteredExpenses.filter((e) => e.category === 'maintenance').reduce((s, e) => s + (Number(e.amount) || 0), 0)
   const cleaningCost = filteredExpenses.filter((e) => e.category === 'cleaning').reduce((s, e) => s + (Number(e.amount) || 0), 0)
@@ -155,9 +187,38 @@ export default function VillaPage() {
   const showExpenseBreakdown = canSeeExpenseBreakdown(currentUser.role)
   const showVendorDetails = canSeeVendorDetails(currentUser.role)
   const canEdit = canEditBookings(currentUser.role)
+  const isInvestor = currentUser.role === 'investor'
+  const investorHeroImage = villa ? INVESTOR_VILLA_HERO_IMAGES[villa.name] || null : null
+  const currencyRate = EXCHANGE_RATES[currency]
+  const money = useMemo(
+    () => (value: number) => {
+      const props = DISPLAY_RATES[currency]
+      return new Intl.NumberFormat(props.locale, {
+        style: 'currency',
+        currency: props.code,
+        minimumFractionDigits: props.min,
+        maximumFractionDigits: props.max,
+      }).format(value * currencyRate)
+    },
+    [currency, currencyRate]
+  )
+  const moneyCompact = useMemo(
+    () => (value: number) => {
+      const converted = value * currencyRate
+
+      if (currency === 'IDR') {
+        const absolute = Math.abs(converted)
+        if (absolute >= 1_000_000_000) return `Rp ${(converted / 1_000_000_000).toFixed(2)}B`
+        if (absolute >= 1_000_000) return `Rp ${(converted / 1_000_000).toFixed(1)}M`
+      }
+
+      return money(value)
+    },
+    [currency, currencyRate, money]
+  )
 
   const activeBookingId = selectedBookingId || (selectedDate ? daily[selectedDate]?.bookings[0]?.id || null : null)
-  const selectedBooking = filteredBookings.find((b) => b.id === activeBookingId) || null
+  const selectedBooking = baseBookings.find((b) => b.id === activeBookingId) || null
   const selectedBookingExpenses = selectedBooking ? filteredExpenses.filter((e) => e.date && e.date >= selectedBooking.check_in && e.date < selectedBooking.check_out) : []
   const selectedBookingNet = selectedBooking ? revenue(selectedBooking) - selectedBookingExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0) : 0
 
@@ -194,7 +255,10 @@ export default function VillaPage() {
   })()
 
   const chartData = (() => {
-    const rows = Object.values(daily).filter((d) => new Date(d.date).getTime() >= cutoffTime).sort((a, b) => a.date.localeCompare(b.date))
+    const rows = Object.values(daily).filter((d) => {
+      const date = new Date(d.date)
+      return date.getTime() >= cutoffTime && date <= today
+    }).sort((a, b) => a.date.localeCompare(b.date))
     if (granularity === 'day') return rows.map((r) => ({ label: new Date(r.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), revenue: r.revenue, cost: r.expenses, profit: r.profit }))
     const grouped = new Map<string, { label: string; revenue: number; cost: number; profit: number }>()
     rows.forEach((r) => {
@@ -257,35 +321,92 @@ export default function VillaPage() {
           <Link href="/villas" style={sx.back}>{'<'} Back</Link>
           <div>
             <h1 style={sx.title}>{villa.name}</h1>
-            <div style={sx.status}><span style={{ ...sx.dot, background: statusColor }} />{status}</div>
+            <div style={sx.status}><span style={{ ...sx.dot, background: statusColor }} />{isInvestor ? 'Investor villa view' : status}</div>
           </div>
         </div>
-        <div style={sx.headerRight}>
-          <div style={sx.filters}>
-            <select value={dateRange} onChange={(e) => setDateRange(e.target.value as DateRange)} style={sx.input}><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="90d">Last 90 days</option><option value="ytd">YTD</option><option value="all">All time</option></select>
-            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={sx.input}><option value="all">All Categories</option>{Array.from(new Set(expenses.map((e) => e.category || 'other'))).map((c) => <option key={c} value={c}>{c}</option>)}</select>
-            <select value={vendorFilter} onChange={(e) => setVendorFilter(e.target.value)} style={sx.input}><option value="all">All Vendors</option>{vendors.map((v) => <option key={v} value={v}>{v}</option>)}</select>
+        {!isInvestor ? (
+          <div style={sx.headerRight}>
+            <div style={sx.filters}>
+              <select value={dateRange} onChange={(e) => setDateRange(e.target.value as DateRange)} style={sx.input}><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="90d">Last 90 days</option><option value="ytd">YTD</option><option value="all">All time</option></select>
+              <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={sx.input}><option value="all">All Categories</option>{Array.from(new Set(expenses.map((e) => e.category || 'other'))).map((c) => <option key={c} value={c}>{c}</option>)}</select>
+              <select value={vendorFilter} onChange={(e) => setVendorFilter(e.target.value)} style={sx.input}><option value="all">All Vendors</option>{vendors.map((v) => <option key={v} value={v}>{v}</option>)}</select>
+              <select value={currency} onChange={(e) => setCurrency(e.target.value as Currency)} style={sx.input}><option value="IDR">IDR</option><option value="USD">USD</option><option value="EUR">EUR</option></select>
+            </div>
+            <Stat label="Occupancy" value={pct(occupancy)} />
+            <Stat label="ADR" value={money(adr)} />
           </div>
-          <Stat label="Occupancy" value={pct(occupancy)} />
-          <Stat label="ADR" value={money(adr)} />
-        </div>
+        ) : null}
       </header>
 
+      {isInvestor ? (
+        <section style={sx.investorHero}>
+          <div style={sx.investorHeroCopy}>
+            <div style={sx.investorEyebrow}>Assigned Villa</div>
+            <h2 style={sx.investorHeroTitle}>{villa.name}</h2>
+            <p style={sx.investorHeroText}>A cleaner investor view of revenue, bookings, cost control, and operating health for this villa.</p>
+            <div style={sx.investorHeroControls}>
+              <select value={dateRange} onChange={(e) => setDateRange(e.target.value as DateRange)} style={sx.investorInput}><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="90d">Last 90 days</option><option value="ytd">YTD</option><option value="all">All time</option></select>
+              <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)} style={sx.investorInput}><option value="all">All Categories</option>{Array.from(new Set(expenses.map((e) => e.category || 'other'))).map((c) => <option key={c} value={c}>{c}</option>)}</select>
+              <select value={vendorFilter} onChange={(e) => setVendorFilter(e.target.value)} style={sx.investorInput}><option value="all">All Vendors</option>{vendors.map((v) => <option key={v} value={v}>{v}</option>)}</select>
+              <select value={currency} onChange={(e) => setCurrency(e.target.value as Currency)} style={sx.investorInput}><option value="IDR">IDR</option><option value="USD">USD</option><option value="EUR">EUR</option></select>
+            </div>
+            {investorHeroImage ? (
+              <div style={sx.investorHeroMedia}>
+                <Image src={investorHeroImage} alt={`${villa.name} hero`} fill unoptimized sizes="(max-width: 900px) 100vw, 42vw" style={sx.investorHeroMediaImage} />
+                <div style={sx.investorHeroMediaOverlay} />
+                <div style={sx.investorHeroMediaCaption}>
+                  <span style={sx.investorHeroMediaTag}>Signature View</span>
+                  <strong style={sx.investorHeroMediaTitle}>{villa.name}</strong>
+                </div>
+              </div>
+            ) : null}
+          </div>
+          <div style={sx.investorHeroSignals}>
+            <div style={{ ...sx.investorSignalCard, ...sx.investorSignalPrimary }}>
+              <div style={sx.investorSignalLabel}>{dateRange === 'ytd' ? 'Annualized Revenue' : 'Revenue'}</div>
+              <div style={sx.investorSignalValue}>{moneyCompact(dateRange === 'ytd' ? annualizedRevenue : totalRevenue)}</div>
+              <div style={sx.investorSignalSubtext}>
+                {dateRange === 'ytd' ? `YTD actual ${moneyCompact(totalRevenue)}` : `${dateRange.toUpperCase()} in ${currency}`}
+              </div>
+            </div>
+            <div style={{ ...sx.investorSignalCard, ...sx.investorSignalWarm }}>
+              <div style={sx.investorSignalLabel}>{dateRange === 'ytd' ? 'Annualized Net Profit' : 'Net Profit'}</div>
+              <div style={sx.investorSignalValue}>{moneyCompact(dateRange === 'ytd' ? annualizedProfit : profit)}</div>
+              <div style={sx.investorSignalSubtext}>
+                {dateRange === 'ytd' ? `${pct(100 - expenseRatio)} retained, YTD actual ${moneyCompact(profit)}` : `${pct(100 - expenseRatio)} retained after operating cost`}
+              </div>
+            </div>
+            <div style={sx.investorMiniSignalRow}>
+              <div style={sx.investorMiniSignalCard}>
+                <div style={sx.investorMiniSignalLabel}>Occupancy</div>
+                <div style={sx.investorMiniSignalValue}>{pct(occupancy)}</div>
+                <div style={sx.investorMiniSignalSubtext}>{scopeDays} days in scope</div>
+              </div>
+              <div style={sx.investorMiniSignalCard}>
+                <div style={sx.investorMiniSignalLabel}>ADR</div>
+                <div style={sx.investorMiniSignalValue}>{moneyCompact(adr)}</div>
+                <div style={sx.investorMiniSignalSubtext}>Cost / night {moneyCompact(costPerNight)}</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       <section style={sx.kpis}>
-        <Kpi title="Total Cost" value={money(totalCost)} sub={`Prev ${money(previousExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0))}`} onClick={() => setCategoryFilter('all')} active={categoryFilter === 'all'} />
-        <Kpi title="Cost per Night" value={money(costPerNight)} sub={`ADR ${money(adr)}`} onClick={() => setGranularity('day')} />
-        <Kpi title="Cost per Booking" value={money(costPerBooking)} sub={`${filteredBookings.length} stays`} onClick={() => setSelectedBookingId(filteredBookings[0]?.id || null)} />
+        <Kpi title="Total Cost" value={moneyCompact(totalCost)} sub={`Prev ${moneyCompact(previousExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0))}`} onClick={() => setCategoryFilter('all')} active={categoryFilter === 'all'} />
+        <Kpi title="Cost per Night" value={moneyCompact(costPerNight)} sub={`ADR ${moneyCompact(adr)}`} onClick={() => setGranularity('day')} />
+        <Kpi title="Cost per Booking" value={moneyCompact(costPerBooking)} sub={`${filteredBookings.length} stays`} onClick={() => setSelectedBookingId(filteredBookings[0]?.id || null)} />
         {showProfit ? (
           <>
-            <Kpi title="Profit" value={money(profit)} sub={`Expense ratio ${pct(expenseRatio)}`} onClick={() => setGranularity('week')} />
+            <Kpi title="Profit" value={moneyCompact(profit)} sub={`Expense ratio ${pct(expenseRatio)}`} onClick={() => setGranularity('week')} />
             <Kpi title="Expense Ratio" value={pct(expenseRatio)} sub="Target under 60%" />
           </>
         ) : (
           <Kpi title="Bookings" value={`${filteredBookings.length}`} sub="Operational view only" />
         )}
-        <Kpi title="Maintenance" value={money(maintenanceCost)} sub="Drill into maintenance" onClick={() => setCategoryFilter('maintenance')} active={categoryFilter === 'maintenance'} />
-        <Kpi title="Cleaning" value={money(cleaningCost)} sub="Drill into cleaning" onClick={() => setCategoryFilter('cleaning')} active={categoryFilter === 'cleaning'} />
-        <Kpi title="Staff" value={money(staffCost)} sub="Operational payroll" onClick={() => setCategoryFilter('staff')} active={categoryFilter === 'staff'} />
+        <Kpi title="Maintenance" value={moneyCompact(maintenanceCost)} sub="Drill into maintenance" onClick={() => setCategoryFilter('maintenance')} active={categoryFilter === 'maintenance'} />
+        <Kpi title="Cleaning" value={moneyCompact(cleaningCost)} sub="Drill into cleaning" onClick={() => setCategoryFilter('cleaning')} active={categoryFilter === 'cleaning'} />
+        <Kpi title="Staff" value={moneyCompact(staffCost)} sub="Operational payroll" onClick={() => setCategoryFilter('staff')} active={categoryFilter === 'staff'} />
       </section>
 
       <section style={sx.topGrid}>
@@ -305,25 +426,24 @@ export default function VillaPage() {
 
         <aside style={sx.panel}>
           <div style={sx.row}><strong>Booking Panel</strong>{canEdit && <button type="button" onClick={() => setModalOpen(true)} style={sx.primary}>+ Add Booking</button>}</div>
-          {selectedBooking ? <div style={sx.bookingCol}><div style={sx.row}><div><div style={sx.label}>Guest</div><div style={sx.big}>{selectedBooking.guest_name}</div></div><span style={sx.badge}>{selectedBooking.status || 'Confirmed'}</span></div><div style={sx.metaGrid}><Meta label="Dates" value={`${new Date(selectedBooking.check_in).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${new Date(selectedBooking.check_out).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`} /><Meta label="Nights" value={`${nights(selectedBooking)}`} /><Meta label="Total" value={money(revenue(selectedBooking))} /><Meta label="Source" value={selectedBooking.source || 'Manual'} /></div><div style={sx.profitBox}><div style={sx.smallTitle}>Booking Profitability</div><Sum label="Revenue" value={money(revenue(selectedBooking))} /><Sum label="Cleaning" value={`-${money(selectedBookingExpenses.filter((e) => e.category === 'cleaning').reduce((s, e) => s + (Number(e.amount) || 0), 0))}`} /><Sum label="Utilities" value={`-${money(selectedBookingExpenses.filter((e) => e.category === 'utilities').reduce((s, e) => s + (Number(e.amount) || 0), 0))}`} /><Sum label="Net" value={money(selectedBookingNet)} strong /></div><div style={sx.actions}><button type="button" style={sx.ghost}>Edit</button><button type="button" style={sx.ghost}>Cancel</button><button type="button" style={sx.ghost}>Extend</button></div></div> : <div style={sx.empty}><strong>No booking selected</strong><p style={sx.emptyText}>Pick a day from the calendar to inspect the active stay and its linked expenses.</p></div>}
           {selectedBooking ? <div style={sx.bookingCol}><div style={sx.row}><div><div style={sx.label}>Guest</div><div style={sx.big}>{selectedBooking.guest_name}</div></div><span style={sx.badge}>{selectedBooking.status || 'Confirmed'}</span></div><div style={sx.metaGrid}><Meta label="Dates" value={`${new Date(selectedBooking.check_in).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${new Date(selectedBooking.check_out).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`} /><Meta label="Nights" value={`${nights(selectedBooking)}`} /><Meta label="Total" value={money(revenue(selectedBooking))} /><Meta label="Source" value={selectedBooking.source || 'Manual'} /></div><div style={sx.profitBox}><div style={sx.smallTitle}>{showProfit ? 'Booking Profitability' : 'Booking Cost Summary'}</div><Sum label="Revenue" value={money(revenue(selectedBooking))} /><Sum label="Cleaning" value={`-${money(selectedBookingExpenses.filter((e) => e.category === 'cleaning').reduce((s, e) => s + (Number(e.amount) || 0), 0))}`} /><Sum label="Utilities" value={`-${money(selectedBookingExpenses.filter((e) => e.category === 'utilities').reduce((s, e) => s + (Number(e.amount) || 0), 0))}`} />{showProfit ? <Sum label="Net" value={money(selectedBookingNet)} strong /> : <Sum label="Expense Load" value={money(selectedBookingExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0))} strong />}</div>{canEdit && <div style={sx.actions}><button type="button" style={sx.ghost}>Edit</button><button type="button" style={sx.ghost}>Cancel</button><button type="button" style={sx.ghost}>Extend</button></div>}</div> : <div style={sx.empty}><strong>No booking selected</strong><p style={sx.emptyText}>Pick a day from the calendar to inspect the active stay and its linked expenses.</p></div>}
         </aside>
       </section>
 
       <section style={sx.panel}>
-        <div style={sx.row}><strong>Revenue vs Cost vs Profit</strong><div style={sx.row}>{(['day', 'week', 'month'] as Granularity[]).map((g) => <button key={g} type="button" onClick={() => setGranularity(g)} style={granularity === g ? sx.toggleOn : sx.toggle}>{g}</button>)}</div></div>
+        <div style={sx.row}><strong>{isInvestor ? 'Performance Trend' : 'Revenue vs Cost vs Profit'}</strong><div style={sx.row}>{(['day', 'week', 'month'] as Granularity[]).map((g) => <button key={g} type="button" onClick={() => setGranularity(g)} style={granularity === g ? sx.toggleOn : sx.toggle}>{g}</button>)}</div></div>
         <div style={sx.chartGrid}>
           <div style={{ minHeight: 320 }}>
             <ResponsiveContainer width="100%" height={320}>
               <LineChart data={chartData}>
                 <CartesianGrid stroke="rgba(255,255,255,0.08)" />
                 <XAxis dataKey="label" stroke="#8da2be" />
-                <YAxis stroke="#8da2be" />
+                <YAxis stroke="#8da2be" tickFormatter={(value) => money(Number(value))} />
                 <Tooltip formatter={(value) => money(Number(value))} />
                 <Legend />
-                <Line type="monotone" dataKey="revenue" stroke="#18c29c" strokeWidth={3} dot={false} />
+                <Line type="monotone" dataKey="revenue" stroke={isInvestor ? '#c6a96b' : '#18c29c'} strokeWidth={3} dot={false} />
                 <Line type="monotone" dataKey="cost" stroke="#f97316" strokeWidth={2} dot={false} />
-                {showProfit && <Line type="monotone" dataKey="profit" stroke="#60a5fa" strokeWidth={2} dot={false} />}
+                {showProfit && <Line type="monotone" dataKey="profit" stroke={isInvestor ? '#18c29c' : '#60a5fa'} strokeWidth={2.5} dot={false} />}
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -354,7 +474,7 @@ export default function VillaPage() {
 
       <section style={sx.panel}>
         <div style={sx.row}><strong>Transactions</strong><div style={sx.row}><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search note, vendor, category..." style={sx.input} /><button type="button" onClick={() => {
-          const csv = [showVendorDetails ? 'Date,Category,Vendor,Amount,Note' : 'Date,Category,Amount,Note', ...transactions.map((t) => showVendorDetails ? [t.date || '', t.category || '', t.vendorLabel, Number(t.amount || 0).toFixed(2), (t.note || '').replace(/,/g, ';')].join(',') : [t.date || '', t.category || '', Number(t.amount || 0).toFixed(2), (t.note || '').replace(/,/g, ';')].join(','))].join('\n')
+          const csv = [showVendorDetails ? 'Date,Category,Vendor,Amount,Note' : 'Date,Category,Amount,Note', ...transactions.map((t) => showVendorDetails ? [t.date || '', t.category || '', t.vendorLabel, Number(t.amount || 0).toFixed(0), (t.note || '').replace(/,/g, ';')].join(',') : [t.date || '', t.category || '', Number(t.amount || 0).toFixed(0), (t.note || '').replace(/,/g, ';')].join(','))].join('\n')
           const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
           const url = URL.createObjectURL(blob)
           const a = document.createElement('a')
@@ -372,20 +492,45 @@ export default function VillaPage() {
 }
 
 function Stat({ label, value }: { label: string; value: string }) { return <div style={sx.stat}><span style={sx.statLabel}>{label}</span><strong>{value}</strong></div> }
-function Kpi({ title, value, sub, onClick, active }: { title: string; value: string; sub: string; onClick?: () => void; active?: boolean }) { return <button type="button" onClick={onClick} title={sub} style={{ ...sx.kpi, borderColor: active ? 'rgba(24,194,156,0.7)' : 'rgba(255,255,255,0.08)' }}><span style={sx.kpiTitle}>{title}</span><strong style={sx.kpiValue}>{value}</strong><span style={sx.kpiSub}>{sub}</span></button> }
+function Kpi({ title, value, sub, onClick, active }: { title: string; value: string; sub: string; onClick?: () => void; active?: boolean }) { return <button type="button" onClick={onClick} title={sub} style={{ ...sx.kpi, borderColor: active ? 'rgba(24,194,156,0.7)' : 'rgba(255,255,255,0.08)' }}><span style={sx.kpiTitle}>{title}</span><strong style={sx.kpiValue} title={value}>{value}</strong><span style={sx.kpiSub}>{sub}</span></button> }
 function Meta({ label, value }: { label: string; value: string }) { return <div><div style={sx.label}>{label}</div><strong>{value}</strong></div> }
 function Sum({ label, value, strong }: { label: string; value: string; strong?: boolean }) { return <div style={{ ...sx.sum, ...(strong ? sx.sumStrong : {}) }}><span>{label}</span><strong>{value}</strong></div> }
 function Metric({ label, value }: { label: string; value: string }) { return <div style={sx.metric}><span style={sx.label}>{label}</span><strong>{value}</strong></div> }
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label style={sx.field}><span>{label}</span>{children}</label> }
 
 const sx = {
-  page: { minHeight: '100vh', padding: 32, color: '#f8fafc', background: 'radial-gradient(circle at top left, rgba(24,194,156,0.18), transparent 32%), linear-gradient(180deg, #08111f 0%, #0d1729 100%)', display: 'flex', flexDirection: 'column' as const, gap: 24 },
+  page: { minHeight: '100vh', padding: 32, color: '#f8fafc', background: 'radial-gradient(circle at top left, rgba(24,194,156,0.12), transparent 28%), radial-gradient(circle at top right, rgba(198,169,107,0.10), transparent 24%), linear-gradient(180deg, #08111f 0%, #0d1729 100%)', display: 'flex', flexDirection: 'column' as const, gap: 24 },
   loading: { minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#08111f', color: '#f8fafc' },
-  header: { minHeight: 64, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 20, padding: '22px 24px', borderRadius: 24, background: 'rgba(9,18,32,0.82)', border: '1px solid rgba(255,255,255,0.08)', backdropFilter: 'blur(18px)', flexWrap: 'wrap' as const },
+  header: { minHeight: 64, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 20, padding: '22px 24px', borderRadius: 24, background: 'linear-gradient(180deg, rgba(8,17,31,0.92), rgba(10,18,33,0.88))', border: '1px solid rgba(255,255,255,0.08)', backdropFilter: 'blur(18px)', boxShadow: '0 20px 44px rgba(2,6,23,0.24), inset 0 1px 0 rgba(255,255,255,0.03)', flexWrap: 'wrap' as const },
   headerLeft: { display: 'flex', alignItems: 'center', gap: 18 },
   headerRight: { display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' as const, marginLeft: 'auto' },
   back: { color: '#9ae6d6', textDecoration: 'none', fontSize: 14, padding: '10px 14px', borderRadius: 999, border: '1px solid rgba(154,230,214,0.26)' },
   title: { margin: 0, fontSize: 30, fontWeight: 700, letterSpacing: '-0.03em' }, status: { display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, color: '#c6d0e1', fontSize: 14 }, dot: { width: 10, height: 10, borderRadius: 999 },
+  investorHero: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.08fr) minmax(360px, 0.92fr)', gap: 20, padding: 26, borderRadius: 28, border: '1px solid rgba(198,169,107,0.18)', background: 'radial-gradient(circle at top right, rgba(24,194,156,0.14), transparent 26%), radial-gradient(circle at top left, rgba(198,169,107,0.08), transparent 22%), linear-gradient(180deg, rgba(255,255,255,0.04), rgba(8,17,31,0.94))', boxShadow: '0 20px 46px rgba(2,6,23,0.24), inset 0 1px 0 rgba(255,255,255,0.04)' },
+  investorHeroCopy: { display: 'grid', alignContent: 'center' as const, gap: 12, minHeight: 160 },
+  investorEyebrow: { fontSize: 12, textTransform: 'uppercase' as const, letterSpacing: '0.12em', color: '#c6a96b' },
+  investorHeroTitle: { margin: 0, fontSize: 38, lineHeight: 1.02, letterSpacing: '-0.05em', fontWeight: 620 },
+  investorHeroText: { margin: 0, color: '#adc1d8', fontSize: 15, lineHeight: 1.65, maxWidth: 520 },
+  investorHeroControls: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, marginTop: 10 },
+  investorInput: { minWidth: 130, width: '100%', padding: '13px 14px', borderRadius: 16, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(16,28,49,0.92)', color: '#f8fafc', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)' },
+  investorHeroMedia: { position: 'relative' as const, minHeight: 240, marginTop: 6, overflow: 'hidden', borderRadius: 24, border: '1px solid rgba(255,255,255,0.08)', boxShadow: '0 24px 56px rgba(2,6,23,0.28), inset 0 1px 0 rgba(255,255,255,0.04)' },
+  investorHeroMediaImage: { objectFit: 'cover' as const, objectPosition: 'center center' as const },
+  investorHeroMediaOverlay: { position: 'absolute' as const, inset: 0, background: 'linear-gradient(180deg, rgba(7,12,20,0.04), rgba(7,12,20,0.18) 36%, rgba(7,12,20,0.72) 100%)' },
+  investorHeroMediaCaption: { position: 'absolute' as const, left: 18, right: 18, bottom: 18, display: 'grid', gap: 6 },
+  investorHeroMediaTag: { display: 'inline-flex', width: 'fit-content', padding: '6px 10px', borderRadius: 999, background: 'rgba(8,17,31,0.62)', border: '1px solid rgba(255,255,255,0.12)', color: '#e8eff8', fontSize: 11, textTransform: 'uppercase' as const, letterSpacing: '0.1em', backdropFilter: 'blur(10px)' },
+  investorHeroMediaTitle: { fontSize: 22, lineHeight: 1.05, letterSpacing: '-0.03em', color: '#f9fbff', textShadow: '0 8px 28px rgba(2,6,23,0.45)' },
+  investorHeroSignals: { display: 'grid', gap: 14, alignContent: 'stretch' as const },
+  investorSignalCard: { minHeight: 164, padding: 22, borderRadius: 24, border: '1px solid rgba(255,255,255,0.08)', display: 'grid', gap: 12, alignContent: 'space-between' as const, boxShadow: '0 18px 42px rgba(2,6,23,0.22), inset 0 1px 0 rgba(255,255,255,0.04)' },
+  investorSignalPrimary: { background: 'linear-gradient(180deg, rgba(19,29,42,0.96), rgba(12,20,32,0.92))', borderColor: 'rgba(255,255,255,0.08)' },
+  investorSignalWarm: { background: 'linear-gradient(180deg, rgba(11,38,37,0.94), rgba(8,18,28,0.92))', borderColor: 'rgba(24,194,156,0.16)' },
+  investorSignalLabel: { fontSize: 12, textTransform: 'uppercase' as const, letterSpacing: '0.1em', color: '#9fb2c8' },
+  investorSignalValue: { fontSize: 'clamp(30px, 2.4vw, 44px)', lineHeight: 1, letterSpacing: '-0.05em', fontWeight: 720, color: '#f5f8fd' },
+  investorSignalSubtext: { color: '#c5d2e2', fontSize: 13, lineHeight: 1.55 },
+  investorMiniSignalRow: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 },
+  investorMiniSignalCard: { padding: 18, borderRadius: 20, border: '1px solid rgba(255,255,255,0.07)', background: 'linear-gradient(180deg, rgba(255,255,255,0.04), rgba(10,18,31,0.88))', display: 'grid', gap: 10 },
+  investorMiniSignalLabel: { fontSize: 11, textTransform: 'uppercase' as const, letterSpacing: '0.1em', color: '#9fb2c8' },
+  investorMiniSignalValue: { fontSize: 'clamp(24px, 1.8vw, 32px)', lineHeight: 1, letterSpacing: '-0.04em', fontWeight: 680, color: '#eef6ff' },
+  investorMiniSignalSubtext: { color: '#b9c7d8', fontSize: 12, lineHeight: 1.45 },
   filters: { display: 'flex', gap: 10, padding: 10, borderRadius: 18, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', flexWrap: 'wrap' as const },
   stat: { minWidth: 90, padding: '10px 14px', borderRadius: 16, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column' as const, gap: 4 }, statLabel: { fontSize: 11, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: '#8da2be' },
   kpis: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }, kpi: { appearance: 'none' as const, textAlign: 'left' as const, padding: 20, borderRadius: 22, background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02))', border: '1px solid rgba(255,255,255,0.08)', color: '#f8fafc', cursor: 'pointer', display: 'flex', flexDirection: 'column' as const, gap: 12 }, kpiTitle: { fontSize: 12, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: '#8da2be' }, kpiValue: { fontSize: 28, fontWeight: 700 }, kpiSub: { fontSize: 13, color: '#d5dfed', lineHeight: 1.5 },

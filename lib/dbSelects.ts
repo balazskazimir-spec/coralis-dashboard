@@ -20,3 +20,15 @@ export const STAFF_ISSUE_SELECT =
 
 export const EXPENSE_SUBMISSION_SELECT =
   'id, expense_id, villa_id, expense_date, category, amount, vendor, note, submitted_by, status, receipt_name, receipt_data_url, flagged_reason, created_at, updated_at'
+
+export const INVOICE_CONFIG_SELECT =
+  'id, minimum_amount, updated_by_user_id, updated_by_name, created_at, updated_at'
+
+export const INVESTOR_INVOICE_SELECT =
+  'id, invoice_number, villa_id, villa_name, period_key, period_label, covered_range_label, created_at, due_date, total_amount, ready_amount, review_amount, workflow_status, payment_status, paid_at, creation_mode, created_by_user_id, created_by_name, threshold_applied, forced'
+
+export const INVESTOR_INVOICE_ITEM_SELECT =
+  'id, invoice_id, line_item_key, expense_id, submission_id, villa_id, villa_name, expense_date, category, amount, vendor, note, submitted_by, expense_status, receipt_name, receipt_data_url, created_at'
+
+export const MANAGEMENT_FEE_SELECT =
+  'villa_id, fee_type, percentage_rate, fixed_amount, updated_by_user_id, updated_by_name, created_at, updated_at'

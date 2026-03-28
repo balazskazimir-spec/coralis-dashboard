@@ -23,6 +23,7 @@ import type {
 type Currency = 'IDR' | 'EUR' | 'USD'
 type DateRange = '7d' | '30d' | '90d' | 'ytd' | 'all'
 type SortBy = 'expenses' | 'night' | 'booking'
+type ChartGranularity = 'day' | 'week' | 'month'
 
 const EXCHANGE_RATES: Record<Currency, number> = {
   IDR: 1,
@@ -36,7 +37,6 @@ const DISPLAY_RATES: Record<Currency, { locale: string; code: Currency }> = {
   EUR: { locale: 'de-DE', code: 'EUR' },
 }
 
-const PIE_COLORS = ['#8b5cf6', '#f97316', '#22c55e', '#3b82f6', '#ef4444', '#0ea5e9']
 const EXPENSE_CATEGORIES = ['cleaning', 'maintenance', 'utilities', 'staff', 'supplies', 'transport', 'other'] as const
 const CATEGORY_COLORS: Record<(typeof EXPENSE_CATEGORIES)[number], string> = {
   cleaning: '#34d399',
@@ -85,6 +85,55 @@ function bookingNights(booking: BookingRecord) {
   )
 }
 
+function parseDateOnly(value: string) {
+  return new Date(`${value}T00:00:00`)
+}
+
+function startOfWeek(date: Date) {
+  const result = new Date(date)
+  const day = (result.getDay() + 6) % 7
+  result.setDate(result.getDate() - day)
+  result.setHours(0, 0, 0, 0)
+  return result
+}
+
+function getChartGranularity(range: DateRange): ChartGranularity {
+  if (range === 'all') {
+    return 'month'
+  }
+
+  if (range === 'ytd' || range === '90d') {
+    return 'week'
+  }
+
+  return 'day'
+}
+
+function getBucketMeta(date: Date, granularity: ChartGranularity) {
+  if (granularity === 'month') {
+    return {
+      key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`,
+      monthKey: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`,
+      label: date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+    }
+  }
+
+  if (granularity === 'week') {
+    const weekStart = startOfWeek(date)
+    return {
+      key: weekStart.toISOString().slice(0, 10),
+      monthKey: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`,
+      label: weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    }
+  }
+
+  return {
+    key: date.toISOString().slice(0, 10),
+    monthKey: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`,
+    label: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+  }
+}
+
 function createVillaPerformanceRow(villa: VillaRecord): VillaPerformanceRow {
   return {
     id: villa.id,
@@ -96,6 +145,40 @@ function createVillaPerformanceRow(villa: VillaRecord): VillaPerformanceRow {
     expensePerNight: 0,
     expensePerBooking: 0,
     status: 'OK',
+  }
+}
+
+function formatCategoryName(categoryName: string) {
+  return categoryName
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function getVillaStatusTone(status: VillaPerformanceRow['status']) {
+  if (status === 'Critical') {
+    return {
+      label: 'Critical',
+      color: '#fca5a5',
+      background: 'rgba(239, 68, 68, 0.14)',
+      border: '1px solid rgba(239, 68, 68, 0.26)',
+    }
+  }
+
+  if (status === 'High') {
+    return {
+      label: 'Watch',
+      color: '#fcd34d',
+      background: 'rgba(245, 158, 11, 0.14)',
+      border: '1px solid rgba(245, 158, 11, 0.26)',
+    }
+  }
+
+  return {
+    label: 'Healthy',
+    color: '#86efac',
+    background: 'rgba(16, 185, 129, 0.14)',
+    border: '1px solid rgba(16, 185, 129, 0.24)',
   }
 }
 
@@ -142,6 +225,7 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
   const visibleVillasBase = useMemo(() => filterVillasForUser(villas, currentUser), [currentUser, villas])
   const villaById = useMemo(() => new Map(villas.map((villa) => [villa.id, villa])), [villas])
   const currencyRate = EXCHANGE_RATES[currency]
+  const chartGranularity = useMemo(() => getChartGranularity(dateRange), [dateRange])
 
   const months = useMemo(() => {
     const monthSet = new Set<string>()
@@ -252,6 +336,29 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
     }
 
     return formatCurrency(value)
+  }
+
+  const formatDonutCurrency = (value: number) => {
+    const absolute = Math.abs(value)
+
+    if (currency === 'IDR') {
+      if (absolute >= 1_000_000_000) {
+        return `Rp ${(value / 1_000_000_000).toFixed(1)}B`
+      }
+
+      if (absolute >= 1_000_000) {
+        return `Rp ${(value / 1_000_000).toFixed(1)}M`
+      }
+    }
+
+    const props = DISPLAY_RATES[currency]
+    return new Intl.NumberFormat(props.locale, {
+      style: 'currency',
+      currency: props.code,
+      notation: absolute >= 1000 ? 'compact' : 'standard',
+      maximumFractionDigits: absolute >= 1000 ? 1 : 2,
+      minimumFractionDigits: 0,
+    }).format(value)
   }
 
   const formatAxisValue = (value: number) => {
@@ -374,18 +481,17 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
         return
       }
 
-      const date = new Date(expense.date)
+      const date = parseDateOnly(expense.date)
       if (Number.isNaN(date.getTime())) {
         return
       }
 
-      const monthKey = expense.date.slice(0, 7)
-      const monthLabel = date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+      const bucket = getBucketMeta(date, chartGranularity)
 
-      if (!map[monthKey]) {
-        map[monthKey] = {
-          month: monthLabel,
-          monthKey,
+      if (!map[bucket.key]) {
+        map[bucket.key] = {
+          month: bucket.label,
+          monthKey: bucket.monthKey,
           revenue: 0,
           expenses: 0,
           profit: 0,
@@ -400,7 +506,7 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
       }
 
       const amount = Number(expense.amount) * currencyRate
-      map[monthKey].expenses += amount
+      map[bucket.key].expenses += amount
 
       if (
         expense.category === 'cleaning' ||
@@ -412,39 +518,46 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
         expense.category === 'other'
       ) {
         const categoryKey = expense.category
-        map[monthKey][categoryKey] = Number(map[monthKey][categoryKey] || 0) + amount
+        map[bucket.key][categoryKey] = Number(map[bucket.key][categoryKey] || 0) + amount
       }
     })
 
     filteredBookings.forEach((booking) => {
-      const monthKey = booking.check_in.slice(0, 7)
-      const monthDate = new Date(booking.check_in)
-      const monthLabel = monthDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+      const nightlyRevenue = (Number(booking.price_per_night) || 0) * currencyRate
+      const checkIn = parseDateOnly(booking.check_in)
+      const checkOut = parseDateOnly(booking.check_out)
 
-      if (!map[monthKey]) {
-        map[monthKey] = {
-          month: monthLabel,
-          monthKey,
-          revenue: 0,
-          expenses: 0,
-          profit: 0,
-          cleaning: 0,
-          maintenance: 0,
-          utilities: 0,
-          staff: 0,
-          supplies: 0,
-          transport: 0,
-          other: 0,
+      for (const cursor = new Date(checkIn); cursor < checkOut; cursor.setDate(cursor.getDate() + 1)) {
+        const bucket = getBucketMeta(cursor, chartGranularity)
+
+        if (!map[bucket.key]) {
+          map[bucket.key] = {
+            month: bucket.label,
+            monthKey: bucket.monthKey,
+            revenue: 0,
+            expenses: 0,
+            profit: 0,
+            cleaning: 0,
+            maintenance: 0,
+            utilities: 0,
+            staff: 0,
+            supplies: 0,
+            transport: 0,
+            other: 0,
+          }
         }
-      }
 
-      map[monthKey].revenue += bookingNights(booking) * (Number(booking.price_per_night) || 0) * currencyRate
+        map[bucket.key].revenue += nightlyRevenue
+      }
     })
 
-    const base = Object.values(map).sort((a, b) => (a.monthKey || '').localeCompare(b.monthKey || ''))
+    const base = Object.entries(map)
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+      .map(([, value]) => value)
 
     return base.map((item, index, collection) => {
-      const window = collection.slice(Math.max(0, index - 2), index + 1)
+      const smoothingWindow = chartGranularity === 'month' ? 3 : chartGranularity === 'week' ? 4 : 7
+      const window = collection.slice(Math.max(0, index - (smoothingWindow - 1)), index + 1)
       const smoothedExpenses =
         window.reduce((sum, value) => sum + value.expenses, 0) / window.length
 
@@ -454,7 +567,7 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
         smoothedExpenses,
       }
     })
-  }, [currencyRate, filteredBookings, filteredExpenses])
+  }, [chartGranularity, currencyRate, filteredBookings, filteredExpenses])
 
   const categoryTrendSummary = useMemo(() => {
     return EXPENSE_CATEGORIES.map((categoryName) => {
@@ -467,18 +580,71 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
     }).filter((item) => item.total > 0)
   }, [monthlyData])
 
+  const comparisonExpenses = useMemo(() => {
+    const rangeDays = Math.max(
+      7,
+      Math.ceil((analysisRange.end.getTime() - analysisRange.start.getTime()) / 86400000) + 1
+    )
+    const comparisonEnd = new Date(analysisRange.start)
+    comparisonEnd.setDate(comparisonEnd.getDate() - 1)
+    const comparisonStart = new Date(comparisonEnd)
+    comparisonStart.setDate(comparisonStart.getDate() - rangeDays + 1)
+
+    return visibleExpensesBase.filter((expense) => {
+      if (!expense.date) {
+        return false
+      }
+
+      if (selectedVilla !== 'all' && expense.villa_id !== selectedVilla) {
+        return false
+      }
+
+      if (filterCategory !== 'all' && expense.category !== filterCategory) {
+        return false
+      }
+
+      const expenseDate = parseDateOnly(expense.date)
+      if (Number.isNaN(expenseDate.getTime())) {
+        return false
+      }
+
+      return expenseDate >= comparisonStart && expenseDate <= comparisonEnd
+    })
+  }, [analysisRange.end, analysisRange.start, filterCategory, selectedVilla, visibleExpensesBase])
+
   const categoryData = useMemo(() => {
     const totals: Record<string, number> = {}
+    const comparisonTotals: Record<string, number> = {}
 
     filteredExpenses.forEach((expense) => {
       const categoryName = expense.category || 'unknown'
       totals[categoryName] = (totals[categoryName] || 0) + Number(expense.amount) * currencyRate
     })
 
+    comparisonExpenses.forEach((expense) => {
+      const categoryName = expense.category || 'unknown'
+      comparisonTotals[categoryName] = (comparisonTotals[categoryName] || 0) + Number(expense.amount) * currencyRate
+    })
+
     return Object.entries(totals)
       .filter(([, value]) => value > 0)
-      .map(([name, value]) => ({ name, value }))
-  }, [currencyRate, filteredExpenses])
+      .map(([name, value]) => {
+        const previousValue = comparisonTotals[name] || 0
+        const trend = previousValue > 0 ? ((value - previousValue) / previousValue) * 100 : value > 0 ? 100 : 0
+
+        return {
+          name,
+          label: formatCategoryName(name),
+          value,
+          percentage: totalExpenses > 0 ? (value / totalExpenses) * 100 : 0,
+          color: CATEGORY_COLORS[name as keyof typeof CATEGORY_COLORS] || '#94a3b8',
+          trend,
+        }
+      })
+      .sort((left, right) => right.value - left.value)
+  }, [comparisonExpenses, currencyRate, filteredExpenses, totalExpenses])
+
+  const featuredCategoryData = useMemo(() => categoryData.slice(0, 4), [categoryData])
 
   const villaPerformance = useMemo<VillaPerformanceRow[]>(() => {
     const villaMap: Record<string, VillaPerformanceRow> = {}
@@ -562,55 +728,56 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
     villaPerformance.forEach((villa) => {
       const villaExpenseRatio = villa.revenue > 0 ? villa.expenses / villa.revenue : 0
 
-      if (villaExpenseRatio > 0.42) {
+      if (villaExpenseRatio > 0.42 || villa.status === 'Critical') {
+        alertList.push({
+          type: villa.status === 'Critical' ? 'critical' : 'warning',
+          message: `${villa.name} operating costs are running at ${(villaExpenseRatio * 100).toFixed(0)}% of revenue.`,
+          villa: villa.name,
+        })
+      } else if (villaExpenseRatio > 0.34 || villa.status === 'High') {
         alertList.push({
           type: 'warning',
-          message: `${villa.name} operating costs are running at ${(villaExpenseRatio * 100).toFixed(0)}% of revenue.`,
+          message: `${villa.name} is trending high at ${(villaExpenseRatio * 100).toFixed(0)}% cost-to-revenue.`,
           villa: villa.name,
         })
       }
     })
 
-    EXPENSE_CATEGORIES.forEach((categoryName) => {
-      const categoryExpenses = filteredExpenses.filter((expense) => expense.category === categoryName)
-      if (categoryExpenses.length === 0) {
-        return
-      }
-
-      const averageExpense =
-        categoryExpenses.reduce((sum, expense) => sum + Number(expense.amount), 0) /
-        categoryExpenses.length
-
-      const weekAgo = new Date()
-      weekAgo.setDate(weekAgo.getDate() - 7)
-
-      const recentExpenses = categoryExpenses.filter((expense) => {
-        if (!expense.date) {
-          return false
-        }
-
-        return new Date(expense.date) >= weekAgo
-      })
-
-      if (recentExpenses.length === 0) {
-        return
-      }
-
-      const recentAverage =
-        recentExpenses.reduce((sum, expense) => sum + Number(expense.amount), 0) /
-        recentExpenses.length
-
-      if (recentAverage > averageExpense * 1.5) {
+    categoryData.slice(0, 4).forEach((category) => {
+      if (category.percentage >= 34) {
         alertList.push({
-          type: 'warning',
-          message: `${categoryName} costs are spiking this week.`,
-          category: categoryName,
+          type: category.percentage >= 42 ? 'critical' : 'warning',
+          message: `${category.label} is carrying ${category.percentage.toFixed(0)}% of total spend.`,
+          category: category.name,
+        })
+      }
+
+      if (category.trend >= 22) {
+        alertList.push({
+          type: category.trend >= 40 ? 'critical' : 'warning',
+          message: `${category.label} spend is up ${category.trend.toFixed(0)}% versus the prior period.`,
+          category: category.name,
         })
       }
     })
 
-    return alertList.slice(0, 5)
-  }, [filteredExpenses, villaPerformance])
+    const averageBucketSpend =
+      monthlyData.length > 0
+        ? monthlyData.reduce((sum, item) => sum + item.expenses, 0) / monthlyData.length
+        : 0
+    const latestBucket = monthlyData[monthlyData.length - 1]
+
+    if (latestBucket && averageBucketSpend > 0 && latestBucket.expenses > averageBucketSpend * 1.2) {
+      alertList.push({
+        type: latestBucket.expenses > averageBucketSpend * 1.45 ? 'critical' : 'warning',
+        message: `${latestBucket.month} spend is ${((latestBucket.expenses / averageBucketSpend) * 100 - 100).toFixed(0)}% above the period average.`,
+      })
+    }
+
+    return alertList
+      .filter((alert, index, collection) => collection.findIndex((item) => item.message === alert.message) === index)
+      .slice(0, 6)
+  }, [categoryData, monthlyData, villaPerformance])
 
   const unitEconomics = useMemo(() => {
     const averageRevenuePerVilla = visibleVillas.length > 0 ? totalRevenue / visibleVillas.length : 0
@@ -628,6 +795,23 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
   const averageNightlyRevenue = useMemo(() => {
     return occupiedNights > 0 ? totalRevenue / occupiedNights : 0
   }, [occupiedNights, totalRevenue])
+
+  const villaSectionMetrics = useMemo(() => {
+    const criticalCount = villaPerformance.filter((villa) => villa.status === 'Critical').length
+    const watchCount = villaPerformance.filter((villa) => villa.status === 'High').length
+    const leadingExpenseVilla = villaPerformance[0] || null
+    const averageExpensePerNight =
+      villaPerformance.length > 0
+        ? villaPerformance.reduce((sum, villa) => sum + villa.expensePerNight, 0) / villaPerformance.length
+        : 0
+
+    return {
+      criticalCount,
+      watchCount,
+      leadingExpenseVilla,
+      averageExpensePerNight,
+    }
+  }, [villaPerformance])
 
   if (!canAccessExpenses(currentUser.role)) {
     return (
@@ -816,7 +1000,11 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
 
       <div style={styles.villaTable}>
         <div style={styles.tableHeader}>
-          <h3 style={styles.tableTitle}>Villa Performance</h3>
+          <div>
+            <div style={styles.sectionEyebrow}>Executive ranking</div>
+            <h3 style={styles.tableTitle}>Villa Performance</h3>
+            <div style={styles.sectionSubtitle}>Read which villas are carrying the heaviest operating drag and where cost per stay needs intervention.</div>
+          </div>
           <div style={styles.sortButtons}>
             <button
               onClick={() => setSortBy('expenses')}
@@ -839,6 +1027,25 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
           </div>
         </div>
 
+        <div style={styles.tableMetricRow}>
+          <div style={styles.tableMetricChip}>
+            <span style={styles.tableMetricLabel}>Highest spend</span>
+            <strong style={styles.tableMetricValue}>{villaSectionMetrics.leadingExpenseVilla?.name || 'No villa in scope'}</strong>
+          </div>
+          <div style={styles.tableMetricChip}>
+            <span style={styles.tableMetricLabel}>Average / Night</span>
+            <strong style={styles.tableMetricValue}>{formatHeadlineCurrency(villaSectionMetrics.averageExpensePerNight)}</strong>
+          </div>
+          <div style={styles.tableMetricChip}>
+            <span style={styles.tableMetricLabel}>Critical</span>
+            <strong style={styles.tableMetricValue}>{villaSectionMetrics.criticalCount}</strong>
+          </div>
+          <div style={styles.tableMetricChip}>
+            <span style={styles.tableMetricLabel}>Watch</span>
+            <strong style={styles.tableMetricValue}>{villaSectionMetrics.watchCount}</strong>
+          </div>
+        </div>
+
         <div style={styles.table}>
           <div style={styles.tableRow}>
             <div style={styles.tableHeaderCell}>Villa</div>
@@ -849,80 +1056,179 @@ function AnalyticsExpensesPage({ currentUser }: { currentUser: AppUser }) {
           </div>
 
           {villaPerformance.map((villa) => (
-            <div key={villa.id} style={styles.tableRow}>
-              <div style={styles.tableCell}>{villa.name}</div>
-              <div style={styles.tableCell}>{formatCurrency(villa.expenses)}</div>
+            <div key={villa.id} style={styles.tableBodyRow}>
+              <div style={styles.tableCellPrimary}>
+                <div style={styles.tableVillaName}>{villa.name}</div>
+                <div style={styles.tableVillaMeta}>{villa.bookings} bookings · {villa.nights.toFixed(0)} nights</div>
+              </div>
+              <div style={styles.tableCellStrong}>{formatCurrency(villa.expenses)}</div>
               <div style={styles.tableCell}>{formatCurrency(villa.expensePerNight)}</div>
               <div style={styles.tableCell}>{formatCurrency(villa.expensePerBooking)}</div>
-              <div style={styles.tableCell}>{villa.status}</div>
+              <div style={styles.tableCell}>
+                <span style={{ ...styles.statusBadge, ...getVillaStatusTone(villa.status) }}>
+                  {getVillaStatusTone(villa.status).label}
+                </span>
+              </div>
             </div>
           ))}
         </div>
       </div>
 
+      {canSeeProfit(currentUser.role) && (
+        <div style={styles.economicsCard}>
+          <div style={styles.breakdownHeader}>
+            <div>
+              <h4 style={styles.cardTitle}>Unit Economics</h4>
+              <div style={styles.breakdownSubtitle}>Board-level operating efficiency across the current expense scope.</div>
+            </div>
+            <div style={styles.breakdownTotalChip}>
+              <span style={styles.breakdownTotalLabel}>Occupied</span>
+              <strong style={styles.breakdownTotalValue}>{occupiedNights.toFixed(0)}</strong>
+            </div>
+          </div>
+          <div style={styles.economicsGrid}>
+            <div style={styles.economicItem}>
+              <div style={styles.economicValue}>{formatCurrency(unitEconomics.contributionMargin)}</div>
+              <div style={styles.economicLabel}>Contribution Margin / Villa</div>
+            </div>
+            <div style={styles.economicItem}>
+              <div style={styles.economicValue}>{unitEconomics.breakEvenOccupancy.toFixed(0)}%</div>
+              <div style={styles.economicLabel}>Break-even Occupancy</div>
+            </div>
+            <div style={styles.economicItem}>
+              <div style={styles.economicValue}>{formatCurrency(unitEconomics.averageCostPerBooking)}</div>
+              <div style={styles.economicLabel}>Avg Cost per Booking</div>
+            </div>
+            <div style={styles.economicItem}>
+              <div style={styles.economicValue}>{occupiedNights.toFixed(0)}</div>
+              <div style={styles.economicLabel}>Occupied Nights</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={styles.bottomSection}>
         <div style={styles.breakdownCard}>
-          <h4 style={styles.cardTitle}>Expense Categories</h4>
-          <ResponsiveContainer width="100%" height={200}>
-            <PieChart>
-              <Pie
-                data={categoryData}
-                dataKey="value"
-                nameKey="name"
-                cx="50%"
-                cy="50%"
-                outerRadius={70}
-                label={({ name, percent }: { name?: string; percent?: number }) =>
-                  `${name || 'Unknown'} ${((percent || 0) * 100).toFixed(0)}%`
-                }
-              >
-                {categoryData.map((entry, index) => (
-                  <Cell key={`cell-${entry.name}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip formatter={(value) => formatCurrency(Number(value))} />
-            </PieChart>
-          </ResponsiveContainer>
+          <div style={styles.breakdownHeader}>
+            <div>
+              <h4 style={styles.cardTitle}>Expense Categories</h4>
+              <div style={styles.breakdownSubtitle}>Portfolio cost mix and category pressure in the current scope.</div>
+            </div>
+            <div style={styles.breakdownTotalChip}>
+              <span style={styles.breakdownTotalLabel}>Total</span>
+              <strong style={styles.breakdownTotalValue}>{formatHeadlineCurrency(totalExpenses)}</strong>
+            </div>
+          </div>
+
+          <div style={styles.breakdownLayout}>
+            <div style={styles.breakdownDonutWrap}>
+              <ResponsiveContainer width="100%" height={320}>
+                <PieChart>
+                  <Pie
+                    data={categoryData}
+                    dataKey="value"
+                    nameKey="label"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={92}
+                    outerRadius={132}
+                    paddingAngle={2}
+                    stroke="rgba(15,23,42,0.96)"
+                    strokeWidth={5}
+                  >
+                    {categoryData.map((entry) => (
+                      <Cell key={`cell-${entry.name}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value) => formatCurrency(Number(value))} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div style={styles.breakdownDonutCenter}>
+                <div style={styles.breakdownCenterLabel}>In Scope</div>
+                <div style={styles.breakdownCenterValue} title={formatCurrency(totalExpenses)}>{formatDonutCurrency(totalExpenses)}</div>
+                <div style={styles.breakdownCenterSubtext}>{categoryData.length} active categories</div>
+              </div>
+              <div style={styles.breakdownDonutHalo} />
+            </div>
+
+            <div style={styles.breakdownHighlights}>
+              {featuredCategoryData.map((entry) => (
+                <div key={entry.name} style={styles.breakdownHighlightCard}>
+                  <div style={styles.breakdownHighlightTop}>
+                    <div style={styles.breakdownNameWrap}>
+                      <span style={{ ...styles.legendDot, backgroundColor: entry.color }} />
+                      <span style={styles.breakdownHighlightTitle}>{entry.label}</span>
+                    </div>
+                    <span style={styles.breakdownHighlightPercent}>{entry.percentage.toFixed(0)}%</span>
+                  </div>
+                  <div style={styles.breakdownHighlightValue}>{formatHeadlineCurrency(entry.value)}</div>
+                  <div style={styles.breakdownHighlightCopy}>
+                    {entry.trend >= 0 ? '+' : ''}
+                    {entry.trend.toFixed(0)}% vs prior period
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={styles.breakdownRows}>
+            {categoryData.map((entry) => (
+              <div key={entry.name} style={styles.breakdownRow}>
+                <div style={styles.breakdownRowTop}>
+                  <div style={styles.breakdownNameWrap}>
+                    <span style={{ ...styles.legendDot, backgroundColor: entry.color }} />
+                    <span style={styles.breakdownName}>{entry.label}</span>
+                  </div>
+                  <div style={styles.breakdownNumbers}>
+                    <span style={styles.breakdownValue}>{formatHeadlineCurrency(entry.value)}</span>
+                    <span style={styles.breakdownPercent}>{entry.percentage.toFixed(0)}%</span>
+                  </div>
+                </div>
+                <div style={styles.breakdownTrack}>
+                  <div style={{ ...styles.breakdownFill, width: `${Math.max(8, entry.percentage)}%`, background: entry.color }} />
+                </div>
+                <div style={styles.breakdownTrendRow}>
+                  <span style={styles.breakdownTrendLabel}>vs prior period</span>
+                  <span
+                    style={{
+                      ...styles.breakdownTrendValue,
+                      color: entry.trend >= 0 ? '#fbbf24' : '#86efac',
+                    }}
+                  >
+                    {entry.trend >= 0 ? '+' : ''}
+                    {entry.trend.toFixed(0)}%
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         {canSeeAlerts(currentUser.role) && (
           <div style={styles.alertsCard}>
-            <h4 style={styles.cardTitle}>Alerts & Anomalies</h4>
+            <div style={styles.breakdownHeader}>
+              <div>
+                <h4 style={styles.cardTitle}>Alerts & Anomalies</h4>
+                <div style={styles.breakdownSubtitle}>Cost pressure, category drift, and villa-level operating drag.</div>
+              </div>
+              <div style={styles.breakdownTotalChip}>
+                <span style={styles.breakdownTotalLabel}>Signals</span>
+                <strong style={styles.breakdownTotalValue}>{alerts.length}</strong>
+              </div>
+            </div>
             <div style={styles.alertsList}>
               {alerts.length === 0 ? (
-                <div style={styles.noAlerts}>No alerts right now.</div>
+                <div style={styles.noAlerts}>No anomalies in the current scope. Cost mix and villa ratios are within range.</div>
               ) : (
                 alerts.map((alert, index) => (
                   <div key={`${alert.message}-${index}`} style={styles.alertItem}>
-                    <span style={styles.alertIcon}>{alert.type === 'warning' ? '!' : '!!'}</span>
+                    <span style={{ ...styles.alertIcon, ...(alert.type === 'critical' ? styles.alertIconCritical : styles.alertIconWarning) }}>
+                      {alert.type === 'warning' ? 'Warn' : 'Critical'}
+                    </span>
                     <span style={styles.alertText}>{alert.message}</span>
                   </div>
                 ))
               )}
-            </div>
-          </div>
-        )}
-
-        {canSeeProfit(currentUser.role) && (
-          <div style={styles.economicsCard}>
-            <h4 style={styles.cardTitle}>Unit Economics</h4>
-            <div style={styles.economicsGrid}>
-              <div style={styles.economicItem}>
-                <div style={styles.economicValue}>{formatCurrency(unitEconomics.contributionMargin)}</div>
-                <div style={styles.economicLabel}>Contribution Margin / Villa</div>
-              </div>
-              <div style={styles.economicItem}>
-                <div style={styles.economicValue}>{unitEconomics.breakEvenOccupancy.toFixed(0)}%</div>
-                <div style={styles.economicLabel}>Break-even Occupancy</div>
-              </div>
-              <div style={styles.economicItem}>
-                <div style={styles.economicValue}>{formatCurrency(unitEconomics.averageCostPerBooking)}</div>
-                <div style={styles.economicLabel}>Avg Cost per Booking</div>
-              </div>
-              <div style={styles.economicItem}>
-                <div style={styles.economicValue}>{occupiedNights.toFixed(0)}</div>
-                <div style={styles.economicLabel}>Occupied Nights</div>
-              </div>
             </div>
           </div>
         )}
@@ -1221,12 +1527,12 @@ const styles = {
 
   villaTable: {
     background:
-      'linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(30, 41, 59, 0.72))',
+      'radial-gradient(circle at top right, rgba(250, 204, 21, 0.08), transparent 28%), linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(17, 24, 39, 0.82))',
     backdropFilter: 'blur(14px)',
-    borderRadius: '28px',
-    border: '1px solid rgba(148, 163, 184, 0.14)',
-    boxShadow: '0 22px 60px rgba(2, 6, 23, 0.28)',
-    padding: '24px',
+    borderRadius: '30px',
+    border: '1px solid rgba(198, 169, 107, 0.18)',
+    boxShadow: '0 28px 72px rgba(2, 6, 23, 0.34), inset 0 1px 0 rgba(255,255,255,0.04)',
+    padding: '26px',
     marginBottom: '32px',
   },
 
@@ -1240,10 +1546,27 @@ const styles = {
   },
 
   tableTitle: {
-    fontSize: '18px',
-    fontWeight: '600',
+    fontSize: '22px',
+    fontWeight: '700',
     color: '#f8fafc',
     margin: 0,
+  },
+
+  sectionEyebrow: {
+    marginBottom: '8px',
+    fontSize: '11px',
+    letterSpacing: '0.18em',
+    textTransform: 'uppercase' as const,
+    color: '#fbbf24',
+    fontWeight: 700,
+  },
+
+  sectionSubtitle: {
+    marginTop: '8px',
+    color: '#94a3b8',
+    fontSize: '13px',
+    lineHeight: 1.5,
+    maxWidth: '720px',
   },
 
   sortButtons: {
@@ -1275,16 +1598,28 @@ const styles = {
 
   table: {
     display: 'grid',
-    gap: '1px',
-    backgroundColor: 'rgba(148, 163, 184, 0.12)',
-    borderRadius: '18px',
+    gap: '10px',
+    backgroundColor: 'transparent',
+    borderRadius: '22px',
     overflow: 'hidden',
   },
 
   tableRow: {
     display: 'grid',
     gridTemplateColumns: '2fr 1fr 1fr 1fr 0.8fr',
-    backgroundColor: 'rgba(12, 20, 35, 0.92)',
+    backgroundColor: 'rgba(12, 20, 35, 0.62)',
+    borderRadius: '16px',
+    border: '1px solid rgba(148, 163, 184, 0.1)',
+  },
+
+  tableBodyRow: {
+    display: 'grid',
+    gridTemplateColumns: '2fr 1fr 1fr 1fr 0.8fr',
+    background:
+      'linear-gradient(180deg, rgba(9, 16, 29, 0.96), rgba(15, 23, 42, 0.82))',
+    borderRadius: '18px',
+    border: '1px solid rgba(148, 163, 184, 0.12)',
+    boxShadow: '0 14px 34px rgba(2, 6, 23, 0.18)',
   },
 
   tableHeaderCell: {
@@ -1297,45 +1632,119 @@ const styles = {
   },
 
   tableCell: {
-    padding: '12px 16px',
+    padding: '16px',
     fontSize: '14px',
     color: '#f8fafc',
+    display: 'flex',
+    alignItems: 'center',
+  },
+
+  tableCellPrimary: {
+    padding: '16px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    justifyContent: 'center',
+    gap: '4px',
+  },
+
+  tableCellStrong: {
+    padding: '16px',
+    fontSize: '14px',
+    color: '#f8fafc',
+    display: 'flex',
+    alignItems: 'center',
+    fontWeight: 700,
+  },
+
+  tableVillaName: {
+    color: '#f8fafc',
+    fontSize: '15px',
+    fontWeight: 700,
+  },
+
+  tableVillaMeta: {
+    color: '#94a3b8',
+    fontSize: '12px',
+  },
+
+  tableMetricRow: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+    gap: '12px',
+    marginBottom: '18px',
+  },
+
+  tableMetricChip: {
+    padding: '14px 16px',
+    borderRadius: '18px',
+    background: 'rgba(15, 23, 42, 0.68)',
+    border: '1px solid rgba(148, 163, 184, 0.12)',
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
+  },
+
+  tableMetricLabel: {
+    display: 'block',
+    marginBottom: '6px',
+    fontSize: '11px',
+    letterSpacing: '0.12em',
+    textTransform: 'uppercase' as const,
+    color: '#94a3b8',
+  },
+
+  tableMetricValue: {
+    color: '#f8fafc',
+    fontSize: '16px',
+    fontWeight: 700,
+  },
+
+  statusBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '7px 11px',
+    borderRadius: '999px',
+    fontSize: '11px',
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase' as const,
   },
 
   bottomSection: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+    gridTemplateColumns: 'minmax(0, 1.12fr) minmax(0, 0.88fr)',
     gap: '24px',
+    alignItems: 'start',
   },
 
   breakdownCard: {
     background:
-      'linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(30, 41, 59, 0.72))',
+      'radial-gradient(circle at top left, rgba(59, 130, 246, 0.1), transparent 28%), linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(17, 24, 39, 0.82))',
     backdropFilter: 'blur(14px)',
-    borderRadius: '24px',
-    border: '1px solid rgba(148, 163, 184, 0.14)',
-    boxShadow: '0 18px 48px rgba(2, 6, 23, 0.24)',
-    padding: '20px',
+    borderRadius: '28px',
+    border: '1px solid rgba(148, 163, 184, 0.16)',
+    boxShadow: '0 24px 64px rgba(2, 6, 23, 0.3)',
+    padding: '24px',
   },
 
   alertsCard: {
     background:
-      'linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(30, 41, 59, 0.72))',
+      'radial-gradient(circle at top right, rgba(239, 68, 68, 0.08), transparent 26%), linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(17, 24, 39, 0.82))',
     backdropFilter: 'blur(14px)',
-    borderRadius: '24px',
-    border: '1px solid rgba(148, 163, 184, 0.14)',
-    boxShadow: '0 18px 48px rgba(2, 6, 23, 0.24)',
-    padding: '20px',
+    borderRadius: '28px',
+    border: '1px solid rgba(148, 163, 184, 0.16)',
+    boxShadow: '0 24px 64px rgba(2, 6, 23, 0.3)',
+    padding: '24px',
   },
 
   economicsCard: {
     background:
-      'linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(30, 41, 59, 0.72))',
+      'radial-gradient(circle at top left, rgba(250, 204, 21, 0.08), transparent 30%), linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(17, 24, 39, 0.82))',
     backdropFilter: 'blur(14px)',
-    borderRadius: '24px',
-    border: '1px solid rgba(148, 163, 184, 0.14)',
-    boxShadow: '0 18px 48px rgba(2, 6, 23, 0.24)',
-    padding: '20px',
+    borderRadius: '28px',
+    border: '1px solid rgba(198, 169, 107, 0.16)',
+    boxShadow: '0 24px 64px rgba(2, 6, 23, 0.3)',
+    padding: '24px',
+    marginBottom: '24px',
   },
 
   cardTitle: {
@@ -1345,52 +1754,315 @@ const styles = {
     margin: '0 0 16px 0',
   },
 
+  breakdownHeader: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: '16px',
+    marginBottom: '18px',
+  },
+
+  breakdownSubtitle: {
+    color: '#94a3b8',
+    fontSize: '13px',
+    lineHeight: 1.5,
+  },
+
+  breakdownTotalChip: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'flex-end',
+    gap: '4px',
+    padding: '10px 12px',
+    borderRadius: '16px',
+    background: 'rgba(15, 23, 42, 0.82)',
+    border: '1px solid rgba(148, 163, 184, 0.14)',
+    minWidth: '112px',
+  },
+
+  breakdownTotalLabel: {
+    fontSize: '11px',
+    letterSpacing: '0.12em',
+    textTransform: 'uppercase' as const,
+    color: '#94a3b8',
+  },
+
+  breakdownTotalValue: {
+    fontSize: '18px',
+    color: '#f8fafc',
+    fontWeight: 700,
+  },
+
+  breakdownLayout: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(300px, 0.95fr) minmax(260px, 1.05fr)',
+    gap: '24px',
+    alignItems: 'stretch',
+    marginBottom: '18px',
+  },
+
+  breakdownHighlights: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: '14px',
+  },
+
+  breakdownHighlightCard: {
+    padding: '18px',
+    borderRadius: '18px',
+    background: 'rgba(15, 23, 42, 0.52)',
+    border: '1px solid rgba(148, 163, 184, 0.12)',
+    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
+  },
+
+  breakdownHighlightTop: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '10px',
+    marginBottom: '12px',
+  },
+
+  breakdownHighlightTitle: {
+    color: '#f8fafc',
+    fontSize: '15px',
+    fontWeight: 700,
+  },
+
+  breakdownHighlightPercent: {
+    color: '#cbd5e1',
+    fontSize: '12px',
+    fontWeight: 700,
+  },
+
+  breakdownHighlightValue: {
+    color: '#f8fafc',
+    fontSize: '18px',
+    fontWeight: 800,
+    marginBottom: '8px',
+    whiteSpace: 'nowrap' as const,
+  },
+
+  breakdownHighlightCopy: {
+    color: '#94a3b8',
+    fontSize: '12px',
+    lineHeight: 1.55,
+  },
+
+  breakdownRows: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    gap: '14px',
+  },
+
+  breakdownRow: {
+    padding: '12px 14px',
+    borderRadius: '16px',
+    background: 'rgba(15, 23, 42, 0.55)',
+    border: '1px solid rgba(148, 163, 184, 0.12)',
+  },
+
+  breakdownRowTop: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '12px',
+    marginBottom: '10px',
+  },
+
+  breakdownNameWrap: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+
+  breakdownName: {
+    color: '#f8fafc',
+    fontSize: '14px',
+    fontWeight: 600,
+  },
+
+  breakdownNumbers: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '8px',
+    flexWrap: 'wrap' as const,
+    justifyContent: 'flex-end',
+  },
+
+  breakdownValue: {
+    color: '#f8fafc',
+    fontSize: '13px',
+    fontWeight: 700,
+  },
+
+  breakdownPercent: {
+    color: '#cbd5e1',
+    fontSize: '12px',
+  },
+
+  breakdownTrack: {
+    width: '100%',
+    height: '8px',
+    borderRadius: '999px',
+    background: 'rgba(51, 65, 85, 0.65)',
+    overflow: 'hidden',
+  },
+
+  breakdownFill: {
+    height: '100%',
+    borderRadius: '999px',
+    boxShadow: '0 0 18px rgba(255,255,255,0.12)',
+  },
+
+  breakdownTrendRow: {
+    marginTop: '10px',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '10px',
+  },
+
+  breakdownTrendLabel: {
+    color: '#94a3b8',
+    fontSize: '12px',
+  },
+
+  breakdownTrendValue: {
+    fontSize: '12px',
+    fontWeight: 700,
+  },
+
+  breakdownDonutWrap: {
+    position: 'relative' as const,
+    minHeight: '340px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+
+  breakdownDonutCenter: {
+    position: 'absolute' as const,
+    inset: '50% auto auto 50%',
+    transform: 'translate(-50%, -50%)',
+    textAlign: 'center' as const,
+    width: '190px',
+    pointerEvents: 'none' as const,
+    zIndex: 2,
+  },
+
+  breakdownCenterLabel: {
+    color: '#94a3b8',
+    fontSize: '11px',
+    letterSpacing: '0.12em',
+    textTransform: 'uppercase' as const,
+  },
+
+  breakdownCenterValue: {
+    marginTop: '8px',
+    color: '#f8fafc',
+    fontSize: 'clamp(20px, 1.5vw, 28px)',
+    fontWeight: 800,
+    lineHeight: 1.05,
+    whiteSpace: 'nowrap' as const,
+    letterSpacing: '-0.04em',
+    textShadow: '0 10px 28px rgba(15, 23, 42, 0.45)',
+  },
+
+  breakdownCenterSubtext: {
+    marginTop: '6px',
+    color: '#94a3b8',
+    fontSize: '12px',
+  },
+
+  breakdownDonutHalo: {
+    position: 'absolute' as const,
+    width: '250px',
+    height: '250px',
+    borderRadius: '999px',
+    background: 'radial-gradient(circle, rgba(96,165,250,0.08), transparent 68%)',
+    filter: 'blur(8px)',
+    pointerEvents: 'none' as const,
+    zIndex: 1,
+  },
+
   alertsList: {
     display: 'flex',
     flexDirection: 'column' as const,
-    gap: '8px',
+    gap: '10px',
   },
 
   alertItem: {
     display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    padding: '10px 12px',
-    backgroundColor: 'rgba(127, 29, 29, 0.18)',
+    alignItems: 'flex-start',
+    gap: '10px',
+    padding: '12px 14px',
+    backgroundColor: 'rgba(15, 23, 42, 0.72)',
     borderRadius: '14px',
-    border: '1px solid rgba(248, 113, 113, 0.2)',
+    border: '1px solid rgba(148, 163, 184, 0.14)',
   },
 
   alertIcon: {
-    fontSize: '16px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: '72px',
+    padding: '6px 10px',
+    borderRadius: '999px',
+    fontSize: '11px',
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase' as const,
+  },
+
+  alertIconWarning: {
+    color: '#fbbf24',
+    background: 'rgba(245, 158, 11, 0.14)',
+    border: '1px solid rgba(245, 158, 11, 0.24)',
+  },
+
+  alertIconCritical: {
+    color: '#fca5a5',
+    background: 'rgba(239, 68, 68, 0.14)',
+    border: '1px solid rgba(239, 68, 68, 0.24)',
   },
 
   alertText: {
     fontSize: '14px',
-    color: '#fca5a5',
+    color: '#e2e8f0',
+    lineHeight: 1.5,
   },
 
   noAlerts: {
-    textAlign: 'center' as const,
-    color: '#10b981',
+    textAlign: 'left' as const,
+    color: '#86efac',
     fontSize: '14px',
-    padding: '20px',
+    padding: '18px',
+    borderRadius: '16px',
+    background: 'rgba(15, 23, 42, 0.62)',
+    border: '1px solid rgba(16, 185, 129, 0.18)',
   },
 
   economicsGrid: {
     display: 'grid',
     gap: '16px',
+    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
   },
 
   economicItem: {
-    textAlign: 'center' as const,
+    textAlign: 'left' as const,
+    padding: '16px 18px',
+    borderRadius: '18px',
+    background: 'rgba(15, 23, 42, 0.58)',
+    border: '1px solid rgba(148, 163, 184, 0.12)',
   },
 
   economicValue: {
-    fontSize: '18px',
+    fontSize: '20px',
     fontWeight: 'bold',
     color: '#f8fafc',
-    marginBottom: '4px',
+    marginBottom: '6px',
   },
 
   economicLabel: {
@@ -1398,3 +2070,4 @@ const styles = {
     color: '#94a3b8',
   },
 }
+

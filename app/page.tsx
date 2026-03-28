@@ -8,13 +8,15 @@ import BookingList from '@/components/BookingList'
 import StaffDashboard from '@/components/staff/StaffDashboard'
 import { canSeePortfolio, filterBookingsForUser, filterExpensesForUser, filterVillasForUser } from '@/lib/access'
 import { useRole } from '@/components/auth/RoleProvider'
-import type { BookingRecord, ExpenseRecord, StaffIssueRecord, StaffTaskRecord, VillaRecord } from '@/lib/types'
+import { calculateManagementFeeForRange, normalizeManagementFeeConfigs } from '@/lib/managementFees'
+import { getAnnualizedRoiPercent, getCapitalBasisForVilla } from '@/lib/marketModel'
+import type { BookingRecord, ExpenseRecord, ManagementFeeConfigRecord, StaffIssueRecord, StaffTaskRecord, VillaRecord } from '@/lib/types'
 
-type DateRange = '7d' | '30d' | '90d'
+type DateRange = '7d' | '30d' | '90d' | 'ytd'
 type Currency = 'IDR' | 'USD' | 'EUR'
 type AlertRow = { id: string; label: string; tone: 'good' | 'warn' | 'danger'; villaId?: string; section: 'ranking' | 'occupancy' | 'expenses' | 'operations'; dateRange?: DateRange }
 type DailyPoint = { date: string; revenue: number; cost: number; profit: number; occupancy: number }
-type VillaMetric = { id: string; name: string; revenue: number; cost: number; profit: number; occupancy: number; status: 'OK' | 'Watch' | 'Risk'; bookingCount: number }
+type VillaMetric = { id: string; name: string; revenue: number; cost: number; managementFee: number; profit: number; occupancy: number; status: 'OK' | 'Watch' | 'Risk'; bookingCount: number }
 type GapInfo = { days: number; start: string; end: string }
 
 const DAY_MS = 86_400_000
@@ -39,6 +41,7 @@ const DISPLAY_RATES: Record<Currency, { locale: string; code: Currency }> = {
   EUR: { locale: 'de-DE', code: 'EUR' },
 }
 const formatPercent = (value: number) => `${value.toFixed(1)}%`
+const formatDelta = (value: number) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`
 const toIsoDate = (date: Date) => date.toISOString().slice(0, 10)
 const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate())
 const avg = (values: number[]) => (values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0)
@@ -47,6 +50,10 @@ const villaLocation = () => 'Lombok'
 function getCutoff(range: DateRange) {
   const date = new Date()
   date.setHours(0, 0, 0, 0)
+  if (range === 'ytd') {
+    date.setMonth(0, 1)
+    return date
+  }
   date.setDate(date.getDate() - (range === '7d' ? 6 : range === '30d' ? 29 : 89))
   return date
 }
@@ -57,6 +64,20 @@ function bookingNights(booking: BookingRecord) {
 
 function bookingRevenue(booking: BookingRecord) {
   return bookingNights(booking) * (Number(booking.price_per_night) || 0)
+}
+
+function bookingRevenueInRange(booking: BookingRecord, rangeStart: Date, rangeEnd: Date) {
+  let revenue = 0
+  const nightlyRevenue = Number(booking.price_per_night) || 0
+  const checkOut = new Date(booking.check_out)
+
+  for (let cursor = new Date(booking.check_in); cursor < checkOut; cursor.setDate(cursor.getDate() + 1)) {
+    if (cursor >= rangeStart && cursor <= rangeEnd) {
+      revenue += nightlyRevenue
+    }
+  }
+
+  return revenue
 }
 
 function buildDailySeries(bookings: BookingRecord[], expenses: ExpenseRecord[], cutoff: Date) {
@@ -147,15 +168,17 @@ function HeroStat({
   label,
   value,
   subtext,
+  valueColor,
 }: {
   label: string
   value: string
   subtext?: string
+  valueColor?: string
 }) {
   return (
     <div style={styles.heroStatCard}>
       <div style={styles.heroStatLabel}>{label}</div>
-      <div style={styles.heroStatValue}>{value}</div>
+      <div style={{ ...styles.heroStatValue, ...(valueColor ? { color: valueColor } : null) }}>{value}</div>
       {subtext ? <div style={styles.heroStatSubtext}>{subtext}</div> : null}
     </div>
   )
@@ -212,7 +235,7 @@ function ExecutiveTrendChart({
   formatCurrency,
   formatCompactCurrency,
 }: {
-  data: Array<{ label: string; revenue: number; cost: number; profit: number }>
+  data: Array<{ label: string; revenue: number | null; cost: number | null; profit: number | null }>
   formatCurrency: (value: number) => string
   formatCompactCurrency: (value: number) => string
 }) {
@@ -263,6 +286,94 @@ function ExecutiveTrendChart({
   )
 }
 
+function InvestorAllocationDonut({
+  data,
+  centerLabel,
+  centerValue,
+  formatCurrency,
+}: {
+  data: Array<{ name: string; value: number; color: string }>
+  centerLabel: string
+  centerValue: string
+  formatCurrency: (value: number) => string
+}) {
+  const total = data.reduce((sum, row) => sum + row.value, 0)
+  const gradientSegments = data
+    .filter((row) => row.value > 0)
+    .reduce<{ angle: number; segments: string[] }>(
+      (result, row) => {
+        const sweep = total > 0 ? (row.value / total) * 360 : 0
+        const start = result.angle
+        const end = result.angle + Math.max(sweep - 2.8, 0)
+        result.segments.push(`${row.color} ${start}deg ${end}deg`)
+        return { angle: result.angle + sweep, segments: result.segments }
+      },
+      { angle: -90, segments: [] }
+    )
+    .segments.join(', ')
+  const donutBackground = gradientSegments
+    ? `conic-gradient(from -90deg, ${gradientSegments})`
+    : 'conic-gradient(from -90deg, rgba(255,255,255,0.06) 0deg 360deg)'
+
+  return (
+    <div style={styles.investorDonutShell}>
+      <div style={styles.investorDonutVisualWrap}>
+        <div style={styles.investorDonutAura} />
+        <div style={{ ...styles.investorTechDonut, background: donutBackground }}>
+          <div style={styles.investorTechDonutInnerRing} />
+          <div style={styles.investorTechDonutCore}>
+            <div style={styles.investorDonutCenterLabel}>{centerLabel}</div>
+            <div style={styles.investorDonutCenterValue}>{centerValue}</div>
+            <div style={styles.investorAllocationTotal}>Gross revenue {formatCurrency(total)}</div>
+          </div>
+        </div>
+      </div>
+      <div style={styles.investorDonutLegend}>
+        {data.map((row) => (
+          <div key={row.name} style={styles.investorDonutLegendItem}>
+            <div style={styles.investorAllocationLegendTop}>
+              <span style={{ ...styles.executiveLegendDot, background: row.color }} />
+              <span style={styles.investorDonutLegendCopy}>
+                <strong>{row.name}</strong>
+                <small>{total > 0 ? formatPercent((row.value / total) * 100) : '0.0%'}</small>
+              </span>
+              <strong style={styles.investorAllocationValue}>{formatCurrency(row.value)}</strong>
+            </div>
+            <div style={styles.investorAllocationMiniTrack}>
+              <div style={{ ...styles.investorAllocationMiniFill, width: `${total > 0 ? (row.value / total) * 100 : 0}%`, background: row.color }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function InvestorMiniSparkline({
+  data,
+  color,
+}: {
+  data: Array<{ label: string; value: number }>
+  color: string
+}) {
+  return (
+    <div style={styles.investorSparkline}>
+      <ResponsiveContainer width="100%" height={54}>
+        <LineChart data={data}>
+          <defs>
+            <linearGradient id="investorSparkFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor={color} stopOpacity={0.28} />
+              <stop offset="95%" stopColor={color} stopOpacity={0.01} />
+            </linearGradient>
+          </defs>
+          <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2.6} dot={false} />
+          <Area type="monotone" dataKey="value" stroke="transparent" fill="url(#investorSparkFill)" />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
 export default function Page() {
   const { currentUser } = useRole()
   const [bookings, setBookings] = useState<BookingRecord[]>([])
@@ -270,9 +381,10 @@ export default function Page() {
   const [villas, setVillas] = useState<VillaRecord[]>([])
   const [taskRows, setTaskRows] = useState<StaffTaskRecord[]>([])
   const [issueRows, setIssueRows] = useState<StaffIssueRecord[]>([])
+  const [managementFeeRows, setManagementFeeRows] = useState<ManagementFeeConfigRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [dateRange, setDateRange] = useState<DateRange>('30d')
+  const [dateRange, setDateRange] = useState<DateRange>(currentUser.role === 'investor' ? 'ytd' : '30d')
   const [selectedVillaIds, setSelectedVillaIds] = useState<string[]>([])
   const [location, setLocation] = useState('all')
   const [currency, setCurrency] = useState<Currency>('IDR')
@@ -291,6 +403,7 @@ export default function Page() {
           villas?: VillaRecord[]
           taskRows?: StaffTaskRecord[]
           issueRows?: StaffIssueRecord[]
+          managementFeeRows?: ManagementFeeConfigRecord[]
         }
 
         if (!response.ok) {
@@ -304,6 +417,7 @@ export default function Page() {
         setVillas(payload.villas || [])
         setTaskRows(payload.taskRows || [])
         setIssueRows(payload.issueRows || [])
+        setManagementFeeRows(payload.managementFeeRows || [])
       } catch (error) {
         setLoadError(String(error))
       } finally {
@@ -312,6 +426,10 @@ export default function Page() {
     }
     void loadData()
   }, [])
+
+  useEffect(() => {
+    setDateRange(currentUser.role === 'investor' ? 'ytd' : '30d')
+  }, [currentUser.role])
 
   const visibleVillas = useMemo(() => filterVillasForUser(villas, currentUser), [currentUser, villas])
   const visibleVillaIds = useMemo(() => new Set(visibleVillas.map((villa) => villa.id)), [visibleVillas])
@@ -352,6 +470,17 @@ export default function Page() {
     () => issueRows.filter((issue) => issue.villa_id && filteredVillaIds.has(issue.villa_id)),
     [filteredVillaIds, issueRows]
   )
+  const managementFeeConfigs = useMemo(
+    () => normalizeManagementFeeConfigs(managementFeeRows, visibleVillas),
+    [managementFeeRows, visibleVillas]
+  )
+  const managementFeeByVillaId = useMemo(
+    () => new Map(managementFeeConfigs.map((config) => [config.villaId, config])),
+    [managementFeeConfigs]
+  )
+  const scopeStartDate = useMemo(() => startOfDay(cutoff), [cutoff])
+  const scopeEndDate = useMemo(() => startOfDay(new Date()), [])
+  const scopeDays = useMemo(() => Math.max(1, Math.round((scopeEndDate.getTime() - scopeStartDate.getTime()) / DAY_MS) + 1), [scopeEndDate, scopeStartDate])
 
   const formatCurrency = (value: number) => {
     const props = DISPLAY_RATES[currency]
@@ -403,31 +532,57 @@ export default function Page() {
   const occupancy = (occupiedNights / Math.max(1, dailySeries.length * Math.max(1, filteredVillas.length))) * 100
   const adr = occupiedNights > 0 ? totalRevenue / occupiedNights : 0
   const revPar = (occupancy / 100) * adr
-  const burnRate = dateRange === '7d' ? (totalCost / 7) * 30 : dateRange === '30d' ? totalCost : (totalCost / 90) * 30
-  const netProfit = totalRevenue - totalCost
+  const totalManagementFee = useMemo(
+    () =>
+      filteredVillas.reduce((sum, villa) => {
+        const villaRevenue = filteredBookings
+          .filter((booking) => booking.villa_id === villa.id)
+          .reduce((revenueSum, booking) => revenueSum + bookingRevenue(booking), 0)
+
+        return sum + calculateManagementFeeForRange({
+          revenue: villaRevenue,
+          config: managementFeeByVillaId.get(villa.id),
+          scopeStart: scopeStartDate,
+          scopeEnd: scopeEndDate,
+        })
+      }, 0),
+    [filteredBookings, filteredVillas, managementFeeByVillaId, scopeEndDate, scopeStartDate]
+  )
+  const burnRate = (totalCost / Math.max(1, scopeDays)) * 30
+  const netProfit = totalRevenue - totalCost - totalManagementFee
+  const annualizedRevenue = (totalRevenue / Math.max(1, scopeDays)) * 365
+  const annualizedManagementFee = (totalManagementFee / Math.max(1, scopeDays)) * 365
+  const annualizedNetProfit = (netProfit / Math.max(1, scopeDays)) * 365
   const profitMargin = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0
   const selectedScopeLabel = selectedVillaIds.length ? `${selectedVillaIds.length} villas selected` : 'All villas in view'
-  const rangeLabel = dateRange === '7d' ? 'Last 7 days' : dateRange === '30d' ? 'Last 30 days' : 'Last 90 days'
+  const rangeLabel = dateRange === '7d' ? 'Last 7 days' : dateRange === '30d' ? 'Last 30 days' : dateRange === '90d' ? 'Last 90 days' : 'YTD'
 
   const villaMetrics: VillaMetric[] = useMemo(() => filteredVillas.map((villa) => {
     const villaBookings = filteredBookings.filter((booking) => booking.villa_id === villa.id)
     const villaExpenses = filteredExpenses.filter((expense) => expense.villa_id === villa.id)
     const revenue = villaBookings.reduce((sum, booking) => sum + bookingRevenue(booking), 0)
     const cost = villaExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0)
-    const profit = revenue - cost
+    const managementFee = calculateManagementFeeForRange({
+      revenue,
+      config: managementFeeByVillaId.get(villa.id),
+      scopeStart: scopeStartDate,
+      scopeEnd: scopeEndDate,
+    })
+    const profit = revenue - cost - managementFee
     const villaOccupancy = (villaBookings.reduce((sum, booking) => sum + bookingNights(booking), 0) / Math.max(1, dailySeries.length)) * 100
-    const status: VillaMetric['status'] = profit < 0 ? 'Risk' : villaOccupancy < 45 || cost > revenue * 0.8 ? 'Watch' : 'OK'
+    const status: VillaMetric['status'] = profit < 0 ? 'Risk' : villaOccupancy < 45 || cost + managementFee > revenue * 0.8 ? 'Watch' : 'OK'
     return {
       id: villa.id,
       name: villa.name,
       revenue,
       cost,
+      managementFee,
       profit,
       occupancy: villaOccupancy,
       status,
       bookingCount: villaBookings.length,
     }
-  }).sort((a, b) => b[sortBy] - a[sortBy]), [dailySeries.length, filteredBookings, filteredExpenses, filteredVillas, sortBy])
+  }).sort((a, b) => b[sortBy] - a[sortBy]), [dailySeries.length, filteredBookings, filteredExpenses, filteredVillas, managementFeeByVillaId, scopeEndDate, scopeStartDate, sortBy])
 
   const occupancyTrend = dailySeries.map((row) => ({ label: new Date(row.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), occupancy: filteredVillas.length ? (row.occupancy / filteredVillas.length) * 100 : 0 }))
   const heatmapDays = dailySeries.slice(-35)
@@ -440,9 +595,26 @@ export default function Page() {
     }))
     .sort((a, b) => b.value - a.value)
 
-  const priorCutoff = new Date(cutoff)
-  priorCutoff.setDate(priorCutoff.getDate() - (dateRange === '7d' ? 7 : dateRange === '30d' ? 30 : 90))
-  const priorExpenses = scopedExpenses.filter((expense) => expense.date && expense.villa_id && filteredVillaIds.has(expense.villa_id) && new Date(expense.date) >= priorCutoff && new Date(expense.date) < cutoff)
+  const priorRangeStart = useMemo(() => {
+    if (dateRange === 'ytd') {
+      return startOfDay(new Date(scopeStartDate.getFullYear() - 1, 0, 1))
+    }
+
+    return new Date(scopeStartDate.getTime() - scopeDays * DAY_MS)
+  }, [dateRange, scopeDays, scopeStartDate])
+  const priorRangeEnd = useMemo(() => {
+    if (dateRange === 'ytd') {
+      return startOfDay(new Date(scopeEndDate.getFullYear() - 1, scopeEndDate.getMonth(), scopeEndDate.getDate()))
+    }
+
+    return new Date(scopeStartDate.getTime() - DAY_MS)
+  }, [dateRange, scopeEndDate, scopeStartDate])
+  const priorScopeDays = useMemo(
+    () => Math.max(1, Math.round((priorRangeEnd.getTime() - priorRangeStart.getTime()) / DAY_MS) + 1),
+    [priorRangeEnd, priorRangeStart]
+  )
+  const priorPeriodLabel = dateRange === 'ytd' ? 'vs prior YTD' : 'vs prior period'
+  const priorExpenses = scopedExpenses.filter((expense) => expense.date && expense.villa_id && filteredVillaIds.has(expense.villa_id) && new Date(expense.date) >= priorRangeStart && new Date(expense.date) <= priorRangeEnd)
   const categoryTrends = expenseByCategory.map((row) => {
     const previous = priorExpenses.filter((expense) => (expense.category || 'other') === row.name).reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0)
     return { ...row, trend: previous > 0 ? ((row.value - previous) / previous) * 100 : row.value > 0 ? 100 : 0 }
@@ -484,6 +656,128 @@ export default function Page() {
   ]
 
   const vendors = Array.from(filteredExpenses.reduce((map, expense) => map.set(expense.vendor || expense.note || 'Direct vendor', (map.get(expense.vendor || expense.note || 'Direct vendor') || 0) + (Number(expense.amount) || 0)), new Map<string, number>())).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 5)
+  const roiCapitalBasis = useMemo(() => filteredVillas.reduce((sum, villa) => sum + getCapitalBasisForVilla(villa.id), 0), [filteredVillas])
+  const annualizedRoi = useMemo(() => getAnnualizedRoiPercent(netProfit, roiCapitalBasis, scopeDays), [netProfit, roiCapitalBasis, scopeDays])
+  const previousBookings = useMemo(
+    () =>
+      scopedBookings.filter(
+        (booking) =>
+          booking.villa_id &&
+          filteredVillaIds.has(booking.villa_id) &&
+          new Date(booking.check_in) >= priorRangeStart &&
+          new Date(booking.check_in) <= priorRangeEnd
+      ),
+    [filteredVillaIds, priorRangeEnd, priorRangeStart, scopedBookings]
+  )
+  const previousRevenue = useMemo(() => previousBookings.reduce((sum, booking) => sum + bookingRevenue(booking), 0), [previousBookings])
+  const previousCost = useMemo(() => priorExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0), [priorExpenses])
+  const previousManagementFee = useMemo(
+    () =>
+      filteredVillas.reduce((sum, villa) => {
+        const villaRevenue = previousBookings
+          .filter((booking) => booking.villa_id === villa.id)
+          .reduce((revenueSum, booking) => revenueSum + bookingRevenue(booking), 0)
+
+        return sum + calculateManagementFeeForRange({
+          revenue: villaRevenue,
+          config: managementFeeByVillaId.get(villa.id),
+          scopeStart: priorRangeStart,
+          scopeEnd: priorRangeEnd,
+        })
+      }, 0),
+    [filteredVillas, managementFeeByVillaId, previousBookings, priorRangeEnd, priorRangeStart]
+  )
+  const previousNetProfit = previousRevenue - previousCost - previousManagementFee
+  const previousAnnualizedRoi = useMemo(
+    () => getAnnualizedRoiPercent(previousNetProfit, roiCapitalBasis, priorScopeDays),
+    [previousNetProfit, priorScopeDays, roiCapitalBasis]
+  )
+  const roiDelta = previousAnnualizedRoi !== 0 ? ((annualizedRoi - previousAnnualizedRoi) / Math.abs(previousAnnualizedRoi)) * 100 : annualizedRoi > 0 ? 100 : 0
+  const profitDelta = previousNetProfit !== 0 ? ((netProfit - previousNetProfit) / Math.abs(previousNetProfit)) * 100 : netProfit > 0 ? 100 : 0
+  const investorHealthTone: 'good' | 'warn' | 'danger' = riskCount > 0 ? 'danger' : watchCount > 0 ? 'warn' : 'good'
+  const investorHealthHeadline = riskCount > 0 ? `${riskCount} villa${riskCount > 1 ? 's' : ''} in risk` : watchCount > 0 ? `${watchCount} villa${watchCount > 1 ? 's' : ''} on watch` : 'Portfolio healthy'
+  const investorMonthlyTrend = useMemo(() => {
+    const ytdStart = startOfDay(new Date(scopeEndDate.getFullYear(), 0, 1))
+    const buckets: Array<{ label: string; revenue: number; cost: number; profit: number }> = []
+    let cursor = new Date(ytdStart)
+    let cumulativeRevenue = 0
+    let cumulativeCost = 0
+
+    while (cursor <= scopeEndDate) {
+      const bucketStart = new Date(cursor)
+      const bucketEnd = new Date(Math.min(scopeEndDate.getTime(), cursor.getTime() + 6 * DAY_MS))
+      const label = bucketStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      const bucketBookings = scopedBookings.filter((booking) => booking.villa_id && filteredVillaIds.has(booking.villa_id))
+      const bucketExpenses = scopedExpenses.filter(
+        (expense) =>
+          expense.villa_id &&
+          filteredVillaIds.has(expense.villa_id) &&
+          expense.date &&
+          new Date(expense.date) >= bucketStart &&
+          new Date(expense.date) <= bucketEnd
+      )
+      const revenue = bucketBookings.reduce((sum, booking) => sum + bookingRevenueInRange(booking, bucketStart, bucketEnd), 0)
+      const cost = bucketExpenses.reduce((sum, expense) => sum + (Number(expense.amount) || 0), 0)
+      const fee = filteredVillas.reduce((sum, villa) => {
+        const villaRevenue = bucketBookings
+          .filter((booking) => booking.villa_id === villa.id)
+          .reduce((revenueSum, booking) => revenueSum + bookingRevenueInRange(booking, bucketStart, bucketEnd), 0)
+
+        return sum + calculateManagementFeeForRange({
+          revenue: villaRevenue,
+          config: managementFeeByVillaId.get(villa.id),
+          scopeStart: bucketStart,
+          scopeEnd: bucketEnd,
+        })
+      }, 0)
+      cumulativeRevenue += revenue
+      cumulativeCost += cost + fee
+
+      buckets.push({
+        label,
+        revenue: cumulativeRevenue,
+        cost: cumulativeCost,
+        profit: cumulativeRevenue - cumulativeCost,
+      })
+
+      cursor = new Date(bucketEnd)
+      cursor.setDate(cursor.getDate() + 1)
+    }
+
+    return buckets
+  }, [filteredVillaIds, filteredVillas, managementFeeByVillaId, scopeEndDate, scopedBookings, scopedExpenses])
+  const upcomingInvestorBookings = useMemo(
+    () =>
+      scopedBookings
+        .filter((booking) => booking.villa_id && filteredVillaIds.has(booking.villa_id) && new Date(booking.check_in) >= startOfDay(new Date()))
+        .sort((left, right) => left.check_in.localeCompare(right.check_in))
+        .slice(0, 6),
+    [filteredVillaIds, scopedBookings]
+  )
+  const upcomingRevenue = useMemo(
+    () => upcomingInvestorBookings.reduce((sum, booking) => sum + bookingRevenue(booking), 0),
+    [upcomingInvestorBookings]
+  )
+  const investorHealthRanking = useMemo(
+    () =>
+      [...villaMetrics].sort((left, right) => {
+        const statusScore = { Risk: 0, Watch: 1, OK: 2 } as const
+        const statusDelta = statusScore[left.status] - statusScore[right.status]
+        if (statusDelta !== 0) return statusDelta
+        return left.profit - right.profit
+      }),
+    [villaMetrics]
+  )
+  const investorAllocationData = useMemo(
+    () => [
+      { name: 'Net profit', value: Math.max(netProfit, 0), color: '#18c29c' },
+      { name: 'Operating cost', value: totalCost, color: '#3b82f6' },
+      { name: 'Mgmt fee', value: totalManagementFee, color: '#c6a96b' },
+    ].filter((row) => row.value > 0),
+    [netProfit, totalCost, totalManagementFee]
+  )
+  const healthyVillaCount = villaMetrics.filter((villa) => villa.status === 'OK').length
+  const feeLoadPercent = totalRevenue > 0 ? (totalManagementFee / totalRevenue) * 100 : 0
 
   const focusAlert = (alert: AlertRow) => {
     if (alert.dateRange) setDateRange(alert.dateRange)
@@ -530,20 +824,290 @@ export default function Page() {
   }
 
   if (!canSeePortfolio(currentUser.role)) {
-    const fallbackMonthly = Array.from(filteredBookings.reduce((map, booking) => map.set(booking.check_in.slice(0, 7), (map.get(booking.check_in.slice(0, 7)) || 0) + bookingRevenue(booking)), new Map<string, number>())).map(([month, revenue]) => ({ month, revenue }))
     return (
       <div style={styles.page}>
-        <div style={styles.header}><div><div style={styles.brand}>Coralis Dashboard</div><h1 style={styles.title}>Assigned Portfolio</h1></div></div>
+        <header style={styles.investorHero}>
+          <div style={styles.investorHeroTopBar}>
+            <div style={styles.investorTopMeta}>
+              <div style={styles.brand}>Coralis Investor View</div>
+              <div style={styles.heroMetaRow}>
+                <span style={styles.heroMetaChip}>{visibleVillas.length} villas assigned</span>
+                <span style={styles.heroMetaChip}>{healthyVillaCount}/{villaMetrics.length || 0} healthy</span>
+              </div>
+            </div>
+            <div style={styles.investorControlsCluster}>
+              <div style={styles.rangePills}>
+                {(['30d', '90d', 'ytd'] as DateRange[]).map((range) => (
+                  <button
+                    key={range}
+                    type="button"
+                    onClick={() => setDateRange(range)}
+                    style={{
+                      ...styles.rangeButton,
+                      borderColor: dateRange === range ? '#c6a96b' : 'rgba(255,255,255,0.08)',
+                      background: dateRange === range ? 'rgba(198,169,107,0.14)' : 'rgba(255,255,255,0.03)',
+                    }}
+                  >
+                    {range === 'ytd' ? 'YTD' : range.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              <label style={styles.investorCurrencyWrap}>
+                <span style={styles.filterFieldLabel}>Currency</span>
+                <select value={currency} onChange={(event) => setCurrency(event.target.value as Currency)} style={styles.investorCurrencySelect}>
+                  <option value="IDR">IDR</option>
+                  <option value="EUR">EUR</option>
+                  <option value="USD">USD</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div style={styles.investorHeroBoard}>
+            <div style={styles.investorLeadPanel}>
+              <div style={styles.investorLeadEyebrow}>Portfolio overview</div>
+              <div style={styles.investorLeadCore}>
+                <h1 style={styles.investorLeadTitle}>Private Villa Portfolio</h1>
+                <p style={styles.investorLeadCopy}>A focused investor view of yield, health, and forward bookings across the villas currently assigned to this account.</p>
+              </div>
+            </div>
+            <div style={styles.investorMetricBoard}>
+              <div style={{ ...styles.investorSignalCard, ...styles.investorSignalPrimary }}>
+                <div style={styles.investorSignalLabel}>Annualized ROI</div>
+                <div style={{ ...styles.investorSignalValue, color: annualizedRoi >= 0 ? '#a7f3d0' : '#fecdd3' }}>{annualizedRoi.toFixed(1)}%</div>
+                <div style={{ ...styles.investorSignalDelta, color: roiDelta >= 0 ? '#9df6d6' : '#fecdd3' }}>{formatDelta(roiDelta)} {priorPeriodLabel}</div>
+              </div>
+              <div style={{ ...styles.investorSignalCard, ...styles.investorSignalWarm }}>
+                <div style={styles.investorSignalLabel}>{dateRange === 'ytd' ? 'Annualized Net Profit' : 'Net Profit'}</div>
+                <div style={{ ...styles.investorSignalValue, color: netProfit >= 0 ? '#86efac' : '#fecdd3' }}>{formatCompactCurrency(dateRange === 'ytd' ? annualizedNetProfit : netProfit)}</div>
+                <div style={{ ...styles.investorSignalDelta, color: profitDelta >= 0 ? '#9df6d6' : '#fecdd3' }}>{formatDelta(profitDelta)} {priorPeriodLabel}</div>
+              </div>
+              <div style={{ ...styles.investorHealthHero, ...(investorHealthTone === 'danger' ? styles.investorHealthDanger : investorHealthTone === 'warn' ? styles.investorHealthWarn : styles.investorHealthGood) }}>
+                <div>
+                  <div style={styles.investorHealthLabel}>Villa Health</div>
+                  <div style={styles.investorHealthTitle}>{investorHealthHeadline}</div>
+                </div>
+                <div style={styles.investorHealthStats}>
+                  <span><strong>{healthyVillaCount}</strong> OK</span>
+                  <span><strong>{watchCount}</strong> Watch</span>
+                  <span><strong>{riskCount}</strong> Risk</span>
+                </div>
+              </div>
+              <div style={styles.investorMiniMetricRow}>
+                <div style={styles.investorMiniMetric}>
+                  <div style={styles.investorMiniMetricLabel}>{dateRange === 'ytd' ? 'Annualized Revenue' : 'Revenue'}</div>
+                  <div style={{ ...styles.investorMiniMetricValue, color: '#8ef0cf' }}>{formatCompactCurrency(dateRange === 'ytd' ? annualizedRevenue : totalRevenue)}</div>
+                </div>
+                <div style={styles.investorMiniMetric}>
+                  <div style={styles.investorMiniMetricLabel}>{dateRange === 'ytd' ? 'Annualized Mgmt Fee' : 'Mgmt Fee'}</div>
+                  <div style={{ ...styles.investorMiniMetricValue, color: '#93c5fd' }}>{formatCompactCurrency(dateRange === 'ytd' ? annualizedManagementFee : totalManagementFee)}</div>
+                </div>
+                <div style={styles.investorMiniMetric}>
+                  <div style={styles.investorMiniMetricLabel}>Occupancy</div>
+                  <div style={{ ...styles.investorMiniMetricValue, color: occupancy >= 50 ? '#8ef0cf' : '#f6c27d' }}>{formatPercent(occupancy)}</div>
+                </div>
+                <div style={styles.investorMiniMetric}>
+                  <div style={styles.investorMiniMetricLabel}>ADR</div>
+                  <div style={{ ...styles.investorMiniMetricValue, color: '#f4dba4' }}>{formatCompactCurrency(adr)}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={styles.investorHeroFooter}>
+            <div style={styles.investorLeadCard}>
+              <div style={styles.investorLeadLabel}>Top villa</div>
+              <div style={styles.investorLeadValue}>{leaderVilla?.name || 'No villa'}</div>
+              <div style={styles.investorLeadSubtext}>{topProfitVilla ? `${formatCompactCurrency(topProfitVilla.profit)} net profit leader` : 'No active profit leader yet'}</div>
+            </div>
+            <div style={styles.investorLeadCard}>
+              <div style={styles.investorLeadLabel}>Forward revenue</div>
+              <div style={styles.investorLeadValue}>{formatCompactCurrency(upcomingRevenue)}</div>
+              <div style={styles.investorLeadSubtext}>{upcomingInvestorBookings.length} upcoming bookings already on the books.</div>
+            </div>
+            <div style={styles.investorLeadCard}>
+              <div style={styles.investorLeadLabel}>Fee load</div>
+              <div style={{ ...styles.investorLeadValue, color: feeLoadPercent <= 18 ? '#83ddb8' : feeLoadPercent <= 24 ? '#dcc07b' : '#e7a5af' }}>{formatPercent(feeLoadPercent)}</div>
+              <div style={styles.investorLeadSubtext}>Management fee share of revenue in current scope.</div>
+            </div>
+          </div>
+        </header>
         {!visibleVillas.length ? <div style={styles.emptyState}>No villas are assigned to this investor profile yet.</div> : null}
-        <div style={styles.kpiGrid}>
-          <PortfolioKpi title="Revenue" value={formatCompactCurrency(totalRevenue)} subtext={formatCurrency(totalRevenue)} accent="#c6a96b" chip="Revenue" featured />
-          <PortfolioKpi title="Expenses" value={formatCompactCurrency(totalCost)} subtext={formatCurrency(totalCost)} accent="#ef4444" chip="Cost" featured />
-          <PortfolioKpi title="Occupied Nights" value={occupiedNights.toString()} subtext={rangeLabel} accent="#60a5fa" chip="Demand" />
-          <PortfolioKpi title="ADR" value={formatCompactCurrency(adr)} subtext={formatCurrency(adr)} accent="#18c29c" chip="Rate" />
+        <section style={styles.investorWealthStripe}>
+          <div style={styles.investorWealthCard}>
+            <div style={styles.investorWealthLabel}>{dateRange === 'ytd' ? 'Annualized Wealth Summary' : 'Wealth Summary'}</div>
+            <div style={styles.investorWealthValue}>{formatCompactCurrency(dateRange === 'ytd' ? annualizedNetProfit : netProfit)}</div>
+            <div style={styles.investorWealthSubtext}>{dateRange === 'ytd' ? `YTD actual ${formatCompactCurrency(netProfit)} after operating cost and management fee.` : 'Net cash generated after operating cost and management fee.'}</div>
+          </div>
+          <div style={styles.investorWealthCard}>
+            <div style={styles.investorWealthLabel}>ROI Run Rate</div>
+            <div style={{ ...styles.investorWealthValue, color: annualizedRoi >= 0 ? '#8ef0cf' : '#fecdd3' }}>{annualizedRoi.toFixed(1)}%</div>
+            <div style={styles.investorWealthSubtext}>{formatDelta(roiDelta)} {dateRange === 'ytd' ? 'versus last year YTD.' : 'versus the prior matched period.'}</div>
+          </div>
+          <div style={styles.investorWealthCard}>
+            <div style={styles.investorWealthLabel}>Healthy Villas</div>
+            <div style={{ ...styles.investorWealthValue, color: '#8ef0cf' }}>{villaMetrics.filter((villa) => villa.status === 'OK').length}/{villaMetrics.length || 0}</div>
+            <div style={styles.investorWealthSubtext}>Villas currently trading in the healthy zone.</div>
+          </div>
+          <div style={styles.investorWealthCard}>
+            <div style={styles.investorWealthLabel}>Next Arrivals</div>
+            <div style={styles.investorWealthValue}>{upcomingInvestorBookings.length}</div>
+            <div style={styles.investorWealthSubtext}>Upcoming stays already visible in the forward booking curve.</div>
+          </div>
+        </section>
+        <section style={styles.investorActionBar}>
+          <Link href="/invoices" style={styles.investorActionCard}>
+            <small style={styles.small}>Investor billing</small>
+            <strong style={styles.investorActionTitle}>Invoices</strong>
+            <span style={styles.subtle}>Download the latest expense-backed statements.</span>
+          </Link>
+          <Link href="/management-fees" style={styles.investorActionCard}>
+            <small style={styles.small}>Fee transparency</small>
+            <strong style={styles.investorActionTitle}>Management Fee</strong>
+            <span style={styles.subtle}>Review how each villa is charged and how it impacts net yield.</span>
+          </Link>
+        </section>
+        <div style={styles.investorBoardGrid}>
+          <div style={{ ...styles.panelGold, gridArea: 'trend' }}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>Net Performance Trend</h2>
+                <div style={styles.subtle}>Cumulative weekly YTD revenue versus operating cost and management fee across your assigned villas.</div>
+              </div>
+            </div>
+            <ExecutiveTrendChart data={investorMonthlyTrend} formatCurrency={formatCurrency} formatCompactCurrency={formatCompactCurrency} />
+          </div>
+          <div style={{ ...styles.investorTechPanel, ...styles.investorAllocationPanel, gridArea: 'allocation' }}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>Revenue Allocation</h2>
+                <div style={styles.subtle}>How revenue resolves into retained profit, operating cost, and fee load.</div>
+              </div>
+            </div>
+            <InvestorAllocationDonut
+              data={investorAllocationData}
+              centerLabel="Net retained"
+              centerValue={formatCompactCurrency(Math.max(netProfit, 0))}
+              formatCurrency={formatCurrency}
+            />
+          </div>
+          <div style={{ ...styles.investorTechPanel, gridArea: 'health' }}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>Health Pulse</h2>
+                <div style={styles.subtle}>A tighter ranking of which villas are strong and which need attention.</div>
+              </div>
+            </div>
+            <div style={styles.investorPulseList}>
+              {investorHealthRanking.slice(0, 4).map((villa, index) => (
+                <Link key={villa.id} href={`/villas/${villa.id}`} style={styles.investorPulseRow}>
+                  <span style={styles.investorPulseRank}>{String(index + 1).padStart(2, '0')}</span>
+                  <span style={styles.investorPulseCopy}>
+                    <strong>{villa.name}</strong>
+                    <small>{formatCompactCurrency(villa.profit)} net</small>
+                  </span>
+                  <span style={{ ...styles.statusBadge, ...(villa.status === 'Risk' ? styles.danger : villa.status === 'Watch' ? styles.warn : styles.good) }}>
+                    {villa.status}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </div>
+          <div style={{ ...styles.investorTechPanel, gridArea: 'upcoming' }}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>Upcoming Bookings</h2>
+                <div style={styles.subtle}>The next arrivals shaping near-term revenue visibility.</div>
+              </div>
+            </div>
+            {upcomingInvestorBookings.length ? <BookingList bookings={upcomingInvestorBookings} nights={bookingNights} formatAmount={formatCurrency} title="" /> : <div style={styles.emptyState}>No upcoming bookings in the current investor scope.</div>}
+          </div>
         </div>
-        <div style={styles.twoColumn}>
-          <div style={styles.panel}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>Revenue Trend</h2></div><ResponsiveContainer width="100%" height={280}><LineChart data={fallbackMonthly}><CartesianGrid stroke="rgba(255,255,255,0.08)" /><XAxis dataKey="month" stroke="#8fa3bd" /><YAxis stroke="#8fa3bd" /><Tooltip formatter={(value) => formatCurrency(Number(value))} /><Line type="monotone" dataKey="revenue" stroke="#18c29c" strokeWidth={3} dot={false} /></LineChart></ResponsiveContainer></div>
-          <div style={styles.panel}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>Assigned Bookings</h2></div><BookingList bookings={filteredBookings} nights={bookingNights} /></div>
+        <section style={styles.panelGold}>
+          <div style={styles.sectionHeader}>
+            <div>
+              <h2 style={styles.sectionTitle}>Assigned Villas</h2>
+              <div style={styles.subtle}>Luxury summary cards with revenue, fee, and net contribution for each villa.</div>
+            </div>
+          </div>
+          <div style={styles.investorVillaGrid}>
+            {villaMetrics.map((villa) => (
+              <Link key={villa.id} href={`/villas/${villa.id}`} style={styles.investorVillaCard}>
+                <div style={styles.investorVillaTop}>
+                  <div>
+                    <strong style={styles.investorVillaName}>{villa.name}</strong>
+                    <div style={styles.rowMeta}>{villa.bookingCount} bookings in scope</div>
+                  </div>
+                  <span style={{ ...styles.statusBadge, ...(villa.status === 'Risk' ? styles.danger : villa.status === 'Watch' ? styles.warn : styles.good) }}>
+                    {villa.status}
+                  </span>
+                </div>
+                <InvestorMiniSparkline
+                  data={(villaSeries[villa.id] || []).slice(-14).map((day) => ({
+                    label: day.date,
+                    value: day.profit,
+                  }))}
+                  color={villa.profit >= 0 ? '#18c29c' : '#ef4444'}
+                />
+                <div style={styles.investorVillaMetrics}>
+                  <span><small style={styles.small}>Revenue</small><strong style={{ ...styles.filterMetric, color: '#8ef0cf' }}>{formatCompactCurrency(villa.revenue)}</strong></span>
+                  <span><small style={styles.small}>Mgmt Fee</small><strong style={{ ...styles.filterMetric, color: '#93c5fd' }}>{formatCompactCurrency(villa.managementFee)}</strong></span>
+                  <span><small style={styles.small}>Net Profit</small><strong style={{ ...styles.filterMetric, color: villa.profit >= 0 ? '#8ef0cf' : '#fecdd3' }}>{formatCompactCurrency(villa.profit)}</strong></span>
+                  <span><small style={styles.small}>Occupancy</small><strong style={{ ...styles.filterMetric, color: villa.occupancy >= 50 ? '#8ef0cf' : villa.occupancy >= 40 ? '#f6c27d' : '#fecdd3' }}>{formatPercent(villa.occupancy)}</strong></span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+        <div style={styles.investorBottomGrid}>
+          <div style={styles.panel}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>Cost Structure</h2>
+                <div style={styles.subtle}>High-level view of where operating spend is concentrated.</div>
+              </div>
+            </div>
+            <div style={styles.expenseList}>
+              {expenseByCategory.slice(0, 5).map((row) => (
+                <div key={row.name} style={styles.expenseRow}>
+                  <div style={styles.expenseRowTop}>
+                    <div style={styles.expenseNameWrap}>
+                      <span style={{ ...styles.expenseColorDot, background: row.color }} />
+                      <div>
+                        <div style={styles.expenseName}>{row.name}</div>
+                        <div style={styles.expenseTrend}>{formatPercent(row.percentage)} of spend</div>
+                      </div>
+                    </div>
+                    <strong>{formatCompactCurrency(row.value)}</strong>
+                  </div>
+                  <div style={styles.expenseBarTrack}>
+                    <div style={{ ...styles.expenseBarFill, width: `${Math.min(100, row.percentage)}%`, background: row.color }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div style={styles.panel}>
+            <div style={styles.sectionHeader}>
+              <div>
+                <h2 style={styles.sectionTitle}>Villa Health Ranking</h2>
+                <div style={styles.subtle}>A clear top-down ranking of which villas are healthy, soft, or need attention.</div>
+              </div>
+            </div>
+            <div style={styles.investorHealthRanking}>
+              {investorHealthRanking.map((villa, index) => (
+                <Link key={villa.id} href={`/villas/${villa.id}`} style={styles.investorHealthRow}>
+                  <div style={styles.investorHealthRank}>{String(index + 1).padStart(2, '0')}</div>
+                  <div style={styles.investorHealthRowCopy}>
+                    <strong style={styles.rowName}>{villa.name}</strong>
+                    <small style={styles.rowMeta}>{formatCompactCurrency(villa.profit)} net profit</small>
+                  </div>
+                  <div style={styles.investorHealthRowMetrics}>
+                    <span style={{ color: villa.occupancy >= 50 ? '#8ef0cf' : villa.occupancy >= 40 ? '#f6c27d' : '#fecdd3' }}>{formatPercent(villa.occupancy)}</span>
+                    <span style={{ ...styles.statusBadge, ...(villa.status === 'Risk' ? styles.danger : villa.status === 'Watch' ? styles.warn : styles.good) }}>{villa.status}</span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     )
@@ -585,7 +1149,8 @@ export default function Page() {
 
           <div style={styles.heroStatsGrid}>
             <HeroStat label="Revenue in scope" value={formatCompactCurrency(totalRevenue)} subtext={`${filteredVillas.length} villas active`} />
-            <HeroStat label="Net yield" value={formatPercent(profitMargin)} subtext={netProfit >= 0 ? `${formatCompactCurrency(netProfit)} profit` : `${formatCompactCurrency(netProfit)} drag`} />
+            <HeroStat label="Mgmt fee" value={formatCompactCurrency(totalManagementFee)} subtext="Deducted from villa profit" />
+            <HeroStat label="Net yield" value={formatPercent(profitMargin)} subtext={netProfit >= 0 ? `${formatCompactCurrency(netProfit)} after fee` : `${formatCompactCurrency(netProfit)} after fee`} />
             <HeroStat label="Watchlist" value={`${riskCount + watchCount}`} subtext={riskCount ? `${riskCount} risk, ${watchCount} watch` : `${watchCount} villas on watch`} />
             <HeroStat label="Operations" value={`${openIssueCount + openTaskCount}`} subtext={criticalIssueCount ? `${criticalIssueCount} critical issue, ${blockedTaskCount} blocked task` : `${openIssueCount} open issues, ${openTaskCount} open tasks`} />
           </div>
@@ -617,6 +1182,10 @@ export default function Page() {
           <div style={styles.scopeSummaryItem}>
             <div style={styles.scopeSummaryLabel}>Cost ratio</div>
             <div style={styles.scopeSummaryValue}>{formatPercent(costRatio)}</div>
+          </div>
+          <div style={styles.scopeSummaryItem}>
+            <div style={styles.scopeSummaryLabel}>Management fee</div>
+            <div style={styles.scopeSummaryValue}>{formatCompactCurrency(totalManagementFee)}</div>
           </div>
           <div id="operations" style={styles.scopeSummaryItem}>
             <div style={styles.scopeSummaryLabel}>Operations pulse</div>
@@ -661,8 +1230,8 @@ export default function Page() {
           <div style={styles.kpiGrid}>
             <PortfolioKpi title="Total Revenue" value={formatCompactCurrency(totalRevenue)} subtext={`${formatCurrency(totalRevenue)} in ${rangeLabel.toLowerCase()}`} accent="#c6a96b" chip="Revenue" featured />
             <PortfolioKpi title="Total Cost" value={formatCompactCurrency(totalCost)} subtext={`${formatCurrency(totalCost)} operating spend`} accent="#ef4444" chip="Cost" featured />
-            <PortfolioKpi title="Net Profit" value={formatCompactCurrency(netProfit)} subtext={`${formatPercent(profitMargin)} portfolio margin`} accent="#18c29c" chip="Yield" featured />
-            <PortfolioKpi title="Profit Margin" value={formatPercent(profitMargin)} subtext={`Revenue less cost across ${filteredVillas.length} villas`} accent="#60a5fa" chip="Board" />
+            <PortfolioKpi title="Net Profit" value={formatCompactCurrency(netProfit)} subtext={`${formatPercent(profitMargin)} margin after management fee`} accent="#18c29c" chip="Yield" featured />
+            <PortfolioKpi title="Management Fee" value={formatCompactCurrency(totalManagementFee)} subtext={`Across ${filteredVillas.length} villas in ${rangeLabel.toLowerCase()}`} accent="#60a5fa" chip="Fee" />
             <PortfolioKpi title="Occupancy" value={formatPercent(occupancy)} subtext={`${occupiedNights.toFixed(0)} occupied nights`} accent="#18c29c" chip="Demand" />
             <PortfolioKpi title="ADR" value={formatCompactCurrency(adr)} subtext={formatCurrency(adr)} accent="#c6a96b" chip="Rate" />
             <PortfolioKpi title="RevPAR" value={formatCompactCurrency(revPar)} subtext={formatCurrency(revPar)} accent="#60a5fa" chip="Efficiency" />
@@ -708,7 +1277,7 @@ export default function Page() {
 
       <section id="ranking" style={styles.panel}>
         <div style={styles.sectionHeader}><div><h2 style={styles.sectionTitle}>Villa Performance</h2><div style={styles.subtle}>Stronger boardroom ranking with status-first scanning.</div></div><div style={styles.rangePills}>{(['profit', 'revenue', 'cost', 'occupancy'] as const).map((key) => <button key={key} type="button" onClick={() => setSortBy(key)} style={{ ...styles.rangeButton, borderColor: sortBy === key ? '#18c29c' : 'rgba(255,255,255,0.08)', background: sortBy === key ? 'rgba(24,194,156,0.14)' : 'rgba(255,255,255,0.03)' }}>{key}</button>)}</div></div>
-        <div style={styles.table}><div style={styles.tableHead}><span>Rank</span><span>Villa</span><span>Revenue</span><span>Cost</span><span>Profit</span><span>Occ</span><span>Status</span></div>{villaMetrics.map((villa, index) => <Link key={villa.id} href={`/villas/${villa.id}`} style={styles.tableRow}><span style={styles.rankBadge}>{String(index + 1).padStart(2, '0')}</span><span><strong style={styles.rowName}>{villa.name}</strong><small style={styles.rowMeta}>{villa.bookingCount} bookings</small></span><span>{formatCompactCurrency(villa.revenue)}</span><span>{formatCompactCurrency(villa.cost)}</span><span style={{ color: villa.profit >= 0 ? '#8ef0cf' : '#fecdd3' }}>{formatCompactCurrency(villa.profit)}</span><span>{formatPercent(villa.occupancy)}</span><span style={{ ...styles.statusBadge, ...(villa.status === 'Risk' ? styles.danger : villa.status === 'Watch' ? styles.warn : styles.good) }}>{villa.status}</span></Link>)}</div>
+        <div style={styles.table}><div style={styles.tableHead}><span>Rank</span><span>Villa</span><span>Revenue</span><span>Cost</span><span>Mgmt Fee</span><span>Profit</span><span>Occ</span><span>Status</span></div>{villaMetrics.map((villa, index) => <Link key={villa.id} href={`/villas/${villa.id}`} style={styles.tableRow}><span style={styles.rankBadge}>{String(index + 1).padStart(2, '0')}</span><span><strong style={styles.rowName}>{villa.name}</strong><small style={styles.rowMeta}>{villa.bookingCount} bookings</small></span><span>{formatCompactCurrency(villa.revenue)}</span><span>{formatCompactCurrency(villa.cost)}</span><span>{formatCompactCurrency(villa.managementFee)}</span><span style={{ color: villa.profit >= 0 ? '#8ef0cf' : '#fecdd3' }}>{formatCompactCurrency(villa.profit)}</span><span>{formatPercent(villa.occupancy)}</span><span style={{ ...styles.statusBadge, ...(villa.status === 'Risk' ? styles.danger : villa.status === 'Watch' ? styles.warn : styles.good) }}>{villa.status}</span></Link>)}</div>
       </section>
 
       <section id="occupancy" style={styles.twoColumn}>
@@ -783,6 +1352,7 @@ export default function Page() {
 const styles = {
   page: { minHeight: '100vh', padding: 32, color: '#f7fbff', background: 'radial-gradient(circle at top left, rgba(198,169,107,0.18), transparent 28%), radial-gradient(circle at top right, rgba(24,194,156,0.14), transparent 24%), linear-gradient(180deg, #050b14 0%, #0d1729 100%)', display: 'flex', flexDirection: 'column' as const, gap: 24 },
   hero: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.15fr) minmax(360px, 0.85fr)', gap: 24, padding: 32, borderRadius: 34, background: 'radial-gradient(circle at top right, rgba(24,194,156,0.12), transparent 24%), radial-gradient(circle at top left, rgba(198,169,107,0.12), transparent 26%), linear-gradient(135deg, rgba(10,16,28,0.98), rgba(17,26,43,0.92))', border: '1px solid rgba(198,169,107,0.22)', boxShadow: '0 26px 70px rgba(2,6,23,0.35), inset 0 1px 0 rgba(255,255,255,0.04)' },
+  investorHero: { display: 'grid', gap: 28, padding: 34, borderRadius: 34, background: 'radial-gradient(circle at top right, rgba(24,194,156,0.07), transparent 24%), linear-gradient(180deg, rgba(7,13,24,0.98), rgba(11,20,34,0.96))', border: '1px solid rgba(198,169,107,0.18)', boxShadow: '0 26px 64px rgba(2,6,23,0.30), inset 0 1px 0 rgba(255,255,255,0.04)' },
   heroCopyBlock: { display: 'flex', flexDirection: 'column' as const, justifyContent: 'space-between' as const, gap: 18 },
   heroControlColumn: { display: 'grid', gap: 16, alignContent: 'start' as const },
   header: { padding: 24, borderRadius: 24, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' },
@@ -795,6 +1365,34 @@ const styles = {
   filterPanelLabel: { fontSize: 11, textTransform: 'uppercase' as const, letterSpacing: '0.12em', color: '#c6a96b', marginBottom: 12 },
   eyebrow: { color: '#c6a96b', textTransform: 'uppercase' as const, letterSpacing: '0.1em', fontSize: 12, marginBottom: 6 },
   subtle: { color: '#8fa3bd', marginTop: 6, fontSize: 14 },
+  investorControlRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 14, flexWrap: 'wrap' as const },
+  investorCurrencyWrap: { display: 'grid', gap: 8 },
+  investorCurrencySelect: { minWidth: 128, padding: '12px 14px', borderRadius: 14, border: '1px solid rgba(24,194,156,0.22)', background: 'rgba(9,14,24,0.9)', color: '#f7fbff', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)' },
+  investorHeroTopBar: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 20, flexWrap: 'wrap' as const },
+  investorTopMeta: { display: 'grid', gap: 10 },
+  investorControlsCluster: { display: 'flex', alignItems: 'flex-end', gap: 14, flexWrap: 'wrap' as const },
+  investorHeroBoard: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(420px, 0.8fr)', gap: 28, alignItems: 'stretch' as const, minHeight: 360 },
+  investorLeadPanel: { display: 'grid', gap: 20, minWidth: 0, alignContent: 'center' as const, paddingRight: 10 },
+  investorLeadEyebrow: { fontSize: 12, color: '#c6a96b', textTransform: 'uppercase' as const, letterSpacing: '0.12em' },
+  investorLeadCore: { display: 'grid', gap: 18, alignContent: 'center' as const },
+  investorLeadTitle: { margin: 0, fontSize: 'clamp(36px, 3.8vw, 58px)', lineHeight: 0.98, letterSpacing: '-0.06em', maxWidth: 620, fontWeight: 560, color: '#f5f7fb' },
+  investorLeadCopy: { margin: 0, maxWidth: 560, color: '#aebed1', fontSize: 15, lineHeight: 1.7 },
+  investorHeroFooter: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14 },
+  investorLeadCard: { padding: 18, borderRadius: 22, background: 'linear-gradient(180deg, rgba(255,255,255,0.035), rgba(8,13,22,0.88))', border: '1px solid rgba(255,255,255,0.06)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)' },
+  investorLeadLabel: { fontSize: 11, color: '#9bb0c9', textTransform: 'uppercase' as const, letterSpacing: '0.1em', marginBottom: 10 },
+  investorLeadValue: { fontSize: 'clamp(21px, 1.7vw, 28px)', lineHeight: 1.1, fontWeight: 650, letterSpacing: '-0.04em', color: '#eef3f9' },
+  investorLeadSubtext: { marginTop: 8, fontSize: 13, color: '#a6b6ca', lineHeight: 1.55 },
+  investorMetricBoard: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14, alignContent: 'start' as const, minWidth: 0 },
+  investorSignalCard: { minHeight: 160, padding: 20, borderRadius: 24, display: 'grid', gap: 10, alignContent: 'space-between' as const, border: '1px solid rgba(255,255,255,0.07)', boxShadow: '0 16px 34px rgba(2,6,23,0.20), inset 0 1px 0 rgba(255,255,255,0.03)' },
+  investorSignalPrimary: { background: 'linear-gradient(180deg, rgba(14,38,37,0.94), rgba(8,16,23,0.94))', borderColor: 'rgba(24,194,156,0.18)' },
+  investorSignalWarm: { background: 'linear-gradient(180deg, rgba(36,27,15,0.92), rgba(8,16,23,0.94))', borderColor: 'rgba(198,169,107,0.18)' },
+  investorSignalLabel: { fontSize: 11, color: '#a9b9cd', textTransform: 'uppercase' as const, letterSpacing: '0.1em' },
+  investorSignalValue: { fontSize: 'clamp(28px, 2.3vw, 42px)', lineHeight: 0.98, fontWeight: 650, letterSpacing: '-0.05em' },
+  investorSignalDelta: { fontSize: 12, fontWeight: 600, letterSpacing: '0.01em' },
+  investorMiniMetricRow: { gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 },
+  investorMiniMetric: { padding: 18, borderRadius: 20, background: 'linear-gradient(180deg, rgba(255,255,255,0.035), rgba(8,13,22,0.90))', border: '1px solid rgba(255,255,255,0.06)' },
+  investorMiniMetricLabel: { fontSize: 11, color: '#9db2cb', textTransform: 'uppercase' as const, letterSpacing: '0.1em', marginBottom: 10 },
+  investorMiniMetricValue: { fontSize: 'clamp(20px, 1.6vw, 28px)', lineHeight: 1, fontWeight: 620, letterSpacing: '-0.04em' },
   filterBar: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12 },
   filterField: { display: 'grid', gap: 8 },
   filterFieldLabel: { fontSize: 11, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: '#8fa3bd' },
@@ -843,10 +1441,69 @@ const styles = {
   kpiValue: { marginTop: 18, fontSize: 'clamp(30px, 2.6vw, 46px)', fontWeight: 700, letterSpacing: '-0.06em', lineHeight: 1, whiteSpace: 'nowrap' as const },
   kpiSubtext: { marginTop: 14, color: '#c8d3e1', fontSize: 13, lineHeight: 1.5 },
   heroStatsGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 },
+  investorHeroStats: { position: 'relative' as const, zIndex: 1, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, alignContent: 'start' as const },
+  investorSpotlightCard: { minHeight: 188, padding: 20, borderRadius: 24, display: 'flex', flexDirection: 'column' as const, justifyContent: 'space-between' as const, border: '1px solid rgba(255,255,255,0.08)', boxShadow: '0 18px 40px rgba(2,6,23,0.24), inset 0 1px 0 rgba(255,255,255,0.04)' },
+  investorSpotlightPrimary: { background: 'radial-gradient(circle at top right, rgba(24,194,156,0.18), transparent 32%), linear-gradient(180deg, rgba(15,41,38,0.96), rgba(8,16,23,0.94))', borderColor: 'rgba(24,194,156,0.28)' },
+  investorSpotlightSecondary: { background: 'radial-gradient(circle at top right, rgba(198,169,107,0.18), transparent 32%), linear-gradient(180deg, rgba(40,28,12,0.92), rgba(8,16,23,0.94))', borderColor: 'rgba(198,169,107,0.24)' },
+  investorSpotlightLabel: { fontSize: 11, color: '#a9b9cd', textTransform: 'uppercase' as const, letterSpacing: '0.1em' },
+  investorSpotlightValue: { fontSize: 'clamp(36px, 3vw, 58px)', lineHeight: 1, fontWeight: 800, letterSpacing: '-0.07em' },
+  investorSpotlightDelta: { marginTop: 10, fontSize: 13, fontWeight: 700, letterSpacing: '0.01em' },
+  investorSpotlightSubtext: { marginTop: 8, color: '#d1d9e5', fontSize: 13, lineHeight: 1.5 },
+  investorHealthHero: { minHeight: 118, padding: 18, borderRadius: 22, border: '1px solid rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, gridColumn: '1 / -1', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)' },
+  investorHealthGood: { background: 'linear-gradient(135deg, rgba(24,194,156,0.16), rgba(8,16,23,0.92))', borderColor: 'rgba(24,194,156,0.28)' },
+  investorHealthWarn: { background: 'linear-gradient(135deg, rgba(198,169,107,0.16), rgba(8,16,23,0.92))', borderColor: 'rgba(198,169,107,0.28)' },
+  investorHealthDanger: { background: 'linear-gradient(135deg, rgba(239,68,68,0.16), rgba(8,16,23,0.92))', borderColor: 'rgba(239,68,68,0.28)' },
+  investorHealthLabel: { fontSize: 11, textTransform: 'uppercase' as const, letterSpacing: '0.1em', color: '#c8d3e1', marginBottom: 8 },
+  investorHealthTitle: { fontSize: 26, fontWeight: 800, letterSpacing: '-0.05em' },
+  investorHealthStats: { display: 'flex', gap: 14, flexWrap: 'wrap' as const, color: '#eef6ff', fontSize: 13 },
   heroStatCard: { padding: 16, borderRadius: 18, background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(9,14,24,0.9))', border: '1px solid rgba(255,255,255,0.08)' },
   heroStatLabel: { fontSize: 11, color: '#8fa3bd', textTransform: 'uppercase' as const, letterSpacing: '0.08em', marginBottom: 10 },
   heroStatValue: { fontSize: 24, fontWeight: 700, letterSpacing: '-0.04em' },
   heroStatSubtext: { marginTop: 8, fontSize: 12, color: '#c8d3e1', lineHeight: 1.5 },
+  investorActionBar: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 },
+  investorActionCard: { padding: 20, borderRadius: 24, border: '1px solid rgba(198,169,107,0.18)', background: 'radial-gradient(circle at top right, rgba(198,169,107,0.10), transparent 28%), linear-gradient(180deg, rgba(255,255,255,0.05), rgba(8,13,22,0.92))', color: '#f7fbff', textDecoration: 'none', display: 'grid', gap: 10, boxShadow: '0 16px 40px rgba(2,6,23,0.24), inset 0 1px 0 rgba(255,255,255,0.04)' },
+  investorActionTitle: { fontSize: 22, fontWeight: 700, letterSpacing: '-0.03em' },
+  investorWealthStripe: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 },
+  investorWealthCard: { padding: 20, borderRadius: 24, border: '1px solid rgba(24,194,156,0.16)', background: 'radial-gradient(circle at top left, rgba(24,194,156,0.10), transparent 24%), linear-gradient(180deg, rgba(255,255,255,0.05), rgba(8,13,22,0.92))', boxShadow: '0 18px 42px rgba(2,6,23,0.22), inset 0 1px 0 rgba(255,255,255,0.04)' },
+  investorWealthLabel: { fontSize: 11, color: '#a9b9cd', textTransform: 'uppercase' as const, letterSpacing: '0.1em', marginBottom: 10 },
+  investorWealthValue: { fontSize: 'clamp(28px, 2.4vw, 40px)', lineHeight: 1, fontWeight: 800, letterSpacing: '-0.06em', color: '#8ef0cf' },
+  investorWealthSubtext: { marginTop: 10, color: '#cbd6e4', fontSize: 13, lineHeight: 1.5 },
+  investorBoardGrid: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.12fr) minmax(320px, 0.88fr)', gridTemplateAreas: '"trend allocation" "health upcoming"', gap: 20, alignItems: 'stretch' as const },
+  investorRail: { display: 'grid', gap: 20, alignItems: 'start' as const },
+  investorTechPanel: { minWidth: 0, padding: 22, borderRadius: 26, border: '1px solid rgba(96,165,250,0.14)', background: 'radial-gradient(circle at top right, rgba(96,165,250,0.10), transparent 28%), linear-gradient(180deg, rgba(255,255,255,0.04), rgba(8,13,22,0.94))', boxShadow: '0 18px 42px rgba(2,6,23,0.22), inset 0 1px 0 rgba(255,255,255,0.04)' },
+  investorAllocationPanel: { height: '100%', display: 'grid', alignContent: 'center' as const },
+  investorDonutShell: { display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) minmax(220px, 0.95fr)', gap: 18, minHeight: 290, alignItems: 'center' as const },
+  investorDonutVisualWrap: { position: 'relative' as const, minHeight: 280, display: 'grid', placeItems: 'center' as const },
+  investorDonutAura: { position: 'absolute' as const, width: 244, height: 244, borderRadius: '50%', background: 'radial-gradient(circle, rgba(24,194,156,0.16), rgba(59,130,246,0.08) 48%, transparent 72%)', filter: 'blur(18px)', opacity: 0.95 },
+  investorTechDonut: { position: 'relative' as const, width: 244, height: 244, borderRadius: '50%', display: 'grid', placeItems: 'center' as const, boxShadow: '0 0 0 1px rgba(255,255,255,0.05), 0 22px 44px rgba(2,6,23,0.34), inset 0 0 32px rgba(255,255,255,0.04)' },
+  investorTechDonutInnerRing: { position: 'absolute' as const, inset: 16, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.06)', boxShadow: 'inset 0 0 24px rgba(255,255,255,0.04)' },
+  investorTechDonutCore: { position: 'absolute' as const, inset: 44, borderRadius: '50%', display: 'grid', alignContent: 'center' as const, justifyItems: 'center' as const, gap: 8, textAlign: 'center' as const, background: 'radial-gradient(circle at top, rgba(18,29,45,0.96), rgba(8,13,22,0.98))', border: '1px solid rgba(255,255,255,0.06)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' },
+  investorDonutCenterLabel: { fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase' as const, color: '#8fa3bd' },
+  investorDonutCenterValue: { fontSize: 'clamp(22px, 1.8vw, 32px)', lineHeight: 1.05, fontWeight: 750, letterSpacing: '-0.04em', color: '#eef6ff', textAlign: 'center' as const },
+  investorAllocationTotal: { color: '#9fb2c8', fontSize: 13 },
+  investorDonutLegend: { display: 'grid', gap: 12, alignContent: 'center' as const },
+  investorDonutLegendItem: { padding: 14, borderRadius: 18, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', display: 'grid', gap: 10 },
+  investorAllocationLegendTop: { display: 'grid', gridTemplateColumns: '10px minmax(0, 1fr) auto', gap: 10, alignItems: 'center' },
+  investorDonutLegendCopy: { display: 'grid', gap: 2, color: '#d7e1ee', fontSize: 13 },
+  investorAllocationValue: { color: '#eef6ff', fontSize: 13 },
+  investorAllocationMiniTrack: { height: 8, borderRadius: 999, overflow: 'hidden', background: 'rgba(255,255,255,0.06)' },
+  investorAllocationMiniFill: { height: '100%', borderRadius: 999 },
+  investorPulseList: { display: 'grid', gap: 10 },
+  investorPulseRow: { display: 'grid', gridTemplateColumns: '42px minmax(0, 1fr) auto', gap: 12, alignItems: 'center', padding: 14, borderRadius: 18, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', color: '#f7fbff', textDecoration: 'none' },
+  investorPulseRank: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 42, height: 42, borderRadius: 14, background: 'linear-gradient(180deg, rgba(96,165,250,0.24), rgba(96,165,250,0.08))', border: '1px solid rgba(96,165,250,0.20)', color: '#dbeafe', fontWeight: 700 },
+  investorPulseCopy: { display: 'grid', gap: 4, minWidth: 0 },
+  investorSparkline: { marginTop: -2, marginBottom: 4, padding: '2px 0 0' },
+  investorVillaGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 },
+  investorVillaCard: { padding: 20, borderRadius: 24, border: '1px solid rgba(198,169,107,0.16)', background: 'radial-gradient(circle at top left, rgba(24,194,156,0.08), transparent 26%), linear-gradient(180deg, rgba(255,255,255,0.05), rgba(8,13,22,0.94))', color: '#f7fbff', textDecoration: 'none', display: 'grid', gap: 16, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)' },
+  investorVillaTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 },
+  investorVillaName: { display: 'block', fontSize: 20, letterSpacing: '-0.03em', marginBottom: 6 },
+  investorVillaMetrics: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 },
+  investorBottomGrid: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.05fr) minmax(320px, 0.95fr)', gap: 20, alignItems: 'start' as const },
+  investorHealthRanking: { display: 'grid', gap: 12 },
+  investorHealthRow: { display: 'grid', gridTemplateColumns: '54px minmax(0, 1fr) auto', alignItems: 'center', gap: 14, padding: 16, borderRadius: 18, background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(8,13,22,0.92))', border: '1px solid rgba(255,255,255,0.08)', color: '#f7fbff', textDecoration: 'none' },
+  investorHealthRank: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 54, height: 54, borderRadius: 16, background: 'linear-gradient(180deg, rgba(198,169,107,0.28), rgba(198,169,107,0.08))', border: '1px solid rgba(198,169,107,0.24)', color: '#f4e6c8', fontWeight: 800, letterSpacing: '0.04em' },
+  investorHealthRowCopy: { display: 'grid', gap: 4 },
+  investorHealthRowMetrics: { display: 'grid', justifyItems: 'end' as const, gap: 8, fontWeight: 700 },
   chartBoard: { padding: 24, borderRadius: 28, background: 'linear-gradient(180deg, rgba(255,255,255,0.035), rgba(6,11,19,0.95))', border: '1px solid rgba(255,255,255,0.08)' },
   chartInsightRow: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginBottom: 16 },
   chartInsightCard: { padding: 14, borderRadius: 18, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' },
@@ -869,8 +1526,8 @@ const styles = {
   chartTooltipValue: { color: '#f8fbff', fontSize: 12 },
   chartTooltipProfitValue: { color: '#86efac', fontSize: 13 },
   table: { display: 'grid', gap: 10 },
-  tableHead: { display: 'grid', gridTemplateColumns: '0.8fr 2fr 1fr 1fr 1fr 0.8fr 0.9fr', gap: 12, padding: '0 14px', color: '#8fa3bd', textTransform: 'uppercase' as const, fontSize: 12, letterSpacing: '0.08em' },
-  tableRow: { display: 'grid', gridTemplateColumns: '0.8fr 2fr 1fr 1fr 1fr 0.8fr 0.9fr', gap: 12, padding: 16, borderRadius: 18, background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(12,18,31,0.92))', border: '1px solid rgba(198,169,107,0.14)', color: '#f7fbff', textDecoration: 'none', alignItems: 'center' },
+  tableHead: { display: 'grid', gridTemplateColumns: '0.8fr 2fr 1fr 1fr 1fr 1fr 0.8fr 0.9fr', gap: 12, padding: '0 14px', color: '#8fa3bd', textTransform: 'uppercase' as const, fontSize: 12, letterSpacing: '0.08em' },
+  tableRow: { display: 'grid', gridTemplateColumns: '0.8fr 2fr 1fr 1fr 1fr 1fr 0.8fr 0.9fr', gap: 12, padding: 16, borderRadius: 18, background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(12,18,31,0.92))', border: '1px solid rgba(198,169,107,0.14)', color: '#f7fbff', textDecoration: 'none', alignItems: 'center' },
   rankBadge: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 42, height: 42, borderRadius: 14, background: 'linear-gradient(180deg, rgba(198,169,107,0.28), rgba(198,169,107,0.08))', border: '1px solid rgba(198,169,107,0.26)', color: '#f4e6c8', fontWeight: 700 },
   rowName: { display: 'block', fontSize: 16, marginBottom: 4 },
   rowMeta: { display: 'block', color: '#8fa3bd' },

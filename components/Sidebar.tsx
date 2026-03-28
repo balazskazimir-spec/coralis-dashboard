@@ -5,7 +5,8 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { useRole } from '@/components/auth/RoleProvider'
-import { canAccessExpenses, canAccessInbox, canAccessOperations, canManageUsers, filterVillasForUser, ROLE_LABELS } from '@/lib/access'
+import { canAccessExpenses, canAccessInbox, canAccessInvoices, canAccessManagementFees, canAccessOperations, canManageUsers, filterVillasForUser, ROLE_LABELS } from '@/lib/access'
+import { APP_RELEASE_DATE, APP_VERSION } from '@/lib/appMeta'
 import { supabase } from '@/lib/supabase'
 import type { VillaRecord } from '@/lib/types'
 
@@ -39,10 +40,11 @@ export default function Sidebar() {
     <div style={styles.sidebar}>
       <div style={styles.brandWrap}>
         <Image
-          src="/coralis-logo-white.png"
+          src="/coralisoslogo.png"
           alt="Coralis"
-          width={188}
-          height={104}
+          width={200}
+          height={82}
+          unoptimized
           priority
           style={styles.logoImage}
         />
@@ -68,6 +70,7 @@ export default function Sidebar() {
           <Nav href="/tasks" label="Tasks" active={path === '/tasks'} />
           <Nav href="/issues" label="Issues" active={path === '/issues'} />
           {canAccessExpenses(currentUser.role) && <Nav href="/expenses" label="Expenses" active={path === '/expenses'} />}
+          {canAccessInvoices(currentUser.role) && <Nav href="/invoices" label="Invoices" active={path === '/invoices'} />}
 
           <div>
             <div style={styles.group} onClick={() => setOpen(!open)}>
@@ -104,12 +107,19 @@ export default function Sidebar() {
           </div>
 
           {canAccessExpenses(currentUser.role) && <Nav href="/expenses" label="Expenses" active={path === '/expenses'} />}
+          {canAccessInvoices(currentUser.role) && <Nav href="/invoices" label="Invoices" active={path === '/invoices'} />}
+          {canAccessManagementFees(currentUser.role) && <Nav href="/management-fees" label="Management Fee" active={path === '/management-fees'} />}
           {canAccessInbox(currentUser.role) && <Nav href="/inbox" label="Inbox" active={path === '/inbox'} />}
           {canAccessOperations(currentUser.role) && <Nav href="/tasks" label="Tasks" active={path === '/tasks'} />}
           {canAccessOperations(currentUser.role) && <Nav href="/issues" label="Issues" active={path === '/issues'} />}
           {canManageUsers(currentUser.role) && <Nav href="/users" label="Users" active={path === '/users'} />}
         </>
       )}
+
+      <div style={styles.footerMeta}>
+        <div style={styles.footerVersion}>v{APP_VERSION}</div>
+        <div style={styles.footerDate}>Release {APP_RELEASE_DATE}</div>
+      </div>
     </div>
   )
 }
@@ -144,15 +154,16 @@ const styles = {
     display: 'flex',
     alignItems: 'flex-start',
     justifyContent: 'flex-start',
-    marginBottom: 16,
-    paddingBottom: 10,
+    marginBottom: 12,
+    paddingBottom: 6,
   },
 
   logoImage: {
     width: '100%',
-    maxWidth: 188,
+    maxWidth: 200,
     height: 'auto',
     objectFit: 'contain' as const,
+    imageRendering: 'auto' as const,
   },
 
   userCard: {
@@ -209,6 +220,25 @@ const styles = {
     display: 'flex',
     flexDirection: 'column' as const,
     gap: 6,
+  },
+
+  footerMeta: {
+    marginTop: 'auto',
+    paddingTop: 16,
+    borderTop: '1px solid rgba(255,255,255,0.08)',
+    opacity: 0.72,
+  },
+
+  footerVersion: {
+    fontSize: 12,
+    fontWeight: 700,
+    letterSpacing: '0.08em',
+  },
+
+  footerDate: {
+    marginTop: 4,
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.64)',
   },
 }
 

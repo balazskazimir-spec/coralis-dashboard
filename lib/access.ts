@@ -37,6 +37,15 @@ export function canAccessInbox(role: AppRole) {
   return role !== 'investor'
 }
 
+export function canAccessInvoices(role: AppRole) {
+  void role
+  return true
+}
+
+export function canAccessManagementFees(role: AppRole) {
+  return role !== 'staff'
+}
+
 export function canAccessOperations(role: AppRole) {
   return role !== 'investor'
 }

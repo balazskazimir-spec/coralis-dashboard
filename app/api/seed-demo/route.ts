@@ -18,6 +18,16 @@ const VILLA_IDS = {
 const GUEST_FIRST_NAMES = ['Ava', 'Milo', 'Sofia', 'Ethan', 'Luna', 'Noah', 'Chloe', 'Leo', 'Maya', 'Theo']
 const GUEST_LAST_NAMES = ['Smith', 'Tan', 'Patel', 'Williams', 'Garcia', 'Nguyen', 'Brown', 'Davis', 'Lee', 'Walker']
 const EXPENSE_DATES = { staff: '05', utilities: '11', cleaning: '18', maintenance: '25' } as const
+const DEMO_MANAGEMENT_FEES = {
+  [VILLA_IDS.villaSerra]: { feeType: 'percentage', percentageRate: 7.5, fixedAmount: 0, updatedByName: 'System Demo' },
+  [VILLA_IDS.villaMira]: { feeType: 'percentage', percentageRate: 8.0, fixedAmount: 0, updatedByName: 'System Demo' },
+  [VILLA_IDS.villaAzure]: { feeType: 'percentage', percentageRate: 7.0, fixedAmount: 0, updatedByName: 'System Demo' },
+  [VILLA_IDS.villaCoral]: { feeType: 'percentage', percentageRate: 8.5, fixedAmount: 0, updatedByName: 'System Demo' },
+} as const
+const CURRENT_YTD_INVESTOR_BOOSTS = {
+  [VILLA_IDS.villaSerra]: { occupancy: 0.08, rate: 0.11 },
+  [VILLA_IDS.villaMira]: { occupancy: 0.09, rate: 0.12 },
+} as const
 
 type MonthlySnapshot = {
   villaId: string
@@ -129,12 +139,41 @@ function pushExpense(components: ExpenseComponent[], component: ExpenseComponent
   })
 }
 
+function getDemoManagementFeeAmount(villaId: string, revenue: number) {
+  const config = DEMO_MANAGEMENT_FEES[villaId as keyof typeof DEMO_MANAGEMENT_FEES]
+
+  if (!config) {
+    return 0
+  }
+
+  if (config.feeType === 'percentage') {
+    return revenue * (config.percentageRate / 100)
+  }
+
+  return config.fixedAmount
+}
+
+function getCurrentYtdInvestorBoost(villaId: string, date: Date, today: Date) {
+  const boost = CURRENT_YTD_INVESTOR_BOOSTS[villaId as keyof typeof CURRENT_YTD_INVESTOR_BOOSTS]
+
+  if (!boost) {
+    return { occupancy: 0, rate: 0 }
+  }
+
+  if (date.getFullYear() !== today.getFullYear() || date.getMonth() > today.getMonth()) {
+    return { occupancy: 0, rate: 0 }
+  }
+
+  return boost
+}
+
 export async function POST() {
   try {
     const allVillaIds = Object.values(VILLA_IDS)
 
     await supabase.from('bookings').delete().in('villa_id', allVillaIds)
     await supabase.from('expenses').delete().in('villa_id', allVillaIds)
+    await supabase.from('management_fee_configs').delete().in('villa_id', allVillaIds)
 
     const startDate = startOfMonth(new Date(new Date().getFullYear() - 2, new Date().getMonth(), 1))
     const today = new Date()
@@ -154,7 +193,8 @@ export async function POST() {
         const monthEnd = endOfMonth(cursor)
         const lastBookableDate = monthEnd < bookingHorizon ? monthEnd : bookingHorizon
         const totalDaysInMonthWindow = daysBetween(monthStart, addDays(lastBookableDate, 1))
-        const occupancyVariance = seededBetween(`${villaId}:${currentMonthKey}:occ`, -0.02, 0.02)
+        const ytdBoost = getCurrentYtdInvestorBoost(villaId, monthStart, today)
+        const occupancyVariance = seededBetween(`${villaId}:${currentMonthKey}:occ`, -0.02, 0.02) + ytdBoost.occupancy
         const targetOccupancy = getTargetOccupancyForMonth(villaId, monthStart, occupancyVariance)
         const targetNights = clamp(
           Math.round(totalDaysInMonthWindow * targetOccupancy),
@@ -183,7 +223,8 @@ export async function POST() {
           const checkIn = new Date(bookingCursor)
           const checkOut = addDays(checkIn, stayLength)
           const rateVariance = seededBetween(`${villaId}:${currentMonthKey}:rate:${bookingIndex}`, -0.92, 0.92)
-          const pricePerNight = getNightlyRateForVilla(villaId, checkIn, rateVariance)
+          const basePricePerNight = getNightlyRateForVilla(villaId, checkIn, rateVariance)
+          const pricePerNight = clamp(Math.round(basePricePerNight * (1 + ytdBoost.rate)), 2_000_000, 4_000_000)
 
           generatedBookings.push({
             guest_name: guestNameFor(`${villaId}:${currentMonthKey}:guest:${bookingIndex}`),
@@ -302,10 +343,11 @@ export async function POST() {
 
     const generatedExpenses: Array<Omit<ExpenseRecord, 'id'>> = baselineExpenses.map((expense) => {
       const totalRevenue = revenueTotalsByVilla[expense.villaId] || 0
-      const targetTotalProfit = getVillaMarketModel(expense.villaId).capitalBasis * getTargetAnnualRoiForVilla(expense.villaId) * 2
-      const rawTargetTotalExpenses = Math.max(0, totalRevenue - targetTotalProfit)
-      const minimumRealisticExpenses = totalRevenue * 0.27
-      const maximumRealisticExpenses = totalRevenue * 0.39
+      const targetTotalProfitAfterFee = getVillaMarketModel(expense.villaId).capitalBasis * getTargetAnnualRoiForVilla(expense.villaId) * 2
+      const totalManagementFee = getDemoManagementFeeAmount(expense.villaId, totalRevenue)
+      const rawTargetTotalExpenses = Math.max(0, totalRevenue - targetTotalProfitAfterFee - totalManagementFee)
+      const minimumRealisticExpenses = totalRevenue * 0.24
+      const maximumRealisticExpenses = totalRevenue * 0.44
       const targetTotalExpenses = clamp(rawTargetTotalExpenses, minimumRealisticExpenses, maximumRealisticExpenses)
       const scalingFactor = targetTotalExpenses / Math.max(1, baselineTotalsByVilla[expense.villaId] || 1)
 
@@ -319,34 +361,52 @@ export async function POST() {
     })
 
     const { error: expenseError } = await supabase.from('expenses').insert(generatedExpenses)
+    const managementFeeRows = allVillaIds.map((villaId) => {
+      const config = DEMO_MANAGEMENT_FEES[villaId]
+      return {
+        villa_id: villaId,
+        fee_type: config.feeType,
+        percentage_rate: config.percentageRate,
+        fixed_amount: config.fixedAmount,
+        updated_by_user_id: 'system-demo',
+        updated_by_name: config.updatedByName,
+      }
+    })
+    const { error: managementFeeError } = await supabase.from('management_fee_configs').upsert(managementFeeRows, { onConflict: 'villa_id' })
 
     const villaSummary = allVillaIds.map((villaId) => {
       const revenue = revenueTotalsByVilla[villaId] || 0
       const expenses = generatedExpenses
         .filter((expense) => expense.villa_id === villaId)
         .reduce((sum, expense) => sum + Number(expense.amount || 0), 0)
-      const annualizedProfit = (revenue - expenses) / 2
-      const roi = (annualizedProfit / getVillaMarketModel(villaId).capitalBasis) * 100
+      const managementFee = getDemoManagementFeeAmount(villaId, revenue)
+      const annualizedProfitAfterFee = (revenue - expenses - managementFee) / 2
+      const annualizedProfitBeforeFee = (revenue - expenses) / 2
+      const roiAfterFee = (annualizedProfitAfterFee / getVillaMarketModel(villaId).capitalBasis) * 100
+      const roiBeforeFee = (annualizedProfitBeforeFee / getVillaMarketModel(villaId).capitalBasis) * 100
 
       return {
         villaId,
         annualRevenue: Math.round(revenue / 2),
         annualExpenses: Math.round(expenses / 2),
-        annualNetProfit: Math.round(annualizedProfit),
-        annualRoiPercent: Number(roi.toFixed(1)),
+        annualManagementFee: Math.round(managementFee / 2),
+        annualNetProfitBeforeFee: Math.round(annualizedProfitBeforeFee),
+        annualNetProfitAfterFee: Math.round(annualizedProfitAfterFee),
+        annualRoiBeforeFeePercent: Number(roiBeforeFee.toFixed(1)),
+        annualRoiAfterFeePercent: Number(roiAfterFee.toFixed(1)),
       }
     })
 
     return Response.json({
       success: true,
-      message: 'Believable 24-month Lombok villa demo data seeded.',
+      message: 'Believable 24-month Lombok villa demo data seeded with management fees and post-fee ROI targets.',
       summary: {
         villas: allVillaIds.length,
         bookings: generatedBookings.length,
         expenses: generatedExpenses.length,
       },
       villaSummary,
-      errors: { bookingError, expenseError },
+      errors: { bookingError, expenseError, managementFeeError },
     })
   } catch (error) {
     return Response.json({ error: String(error) }, { status: 500 })

@@ -1,36 +1,44 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Coralis Dashboard
 
-## Getting Started
+Current app version: `0.3.0`
 
-First, run the development server:
+Coralis is a role-based villa operations and portfolio platform with dedicated views for:
+- `admin / CEO`
+- `staff / operations`
+- `investor`
+
+## Local Development
+
+Run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Release Tracking
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Use these files as the source of truth:
+- [CHANGELOG.md](./CHANGELOG.md): product and engineering changes by version
+- [package.json](./package.json): current app version
 
-## Learn More
+Recommended release flow:
+1. Add finished work to `CHANGELOG.md`
+2. Bump the version in `package.json`
+3. Keep related deploy/schema notes in the same release entry
 
-To learn more about Next.js, take a look at the following resources:
+Versioning rule:
+- Use neutral release labels such as `v0.3.0`, `v0.3.1`, `v0.4.0`
+- Do not use personal names in release naming
+- For any meaningful feature or shipped fix, update both the version and the changelog entry
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Supabase Schemas
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The project uses SQL schema files in [`supabase`](./supabase):
+- `message_inbox_schema.sql`
+- `staff_ops_schema.sql`
+- `staff_expenses_schema.sql`
+- `invoices_schema.sql`
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Run these in the Supabase SQL Editor when a feature requires new tables.
